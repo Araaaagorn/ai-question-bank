@@ -1,0 +1,20 @@
+# 统一换行符与文本属性
+* text=auto
+
+# Shell / Python 脚本统一 LF，避免在 Linux 服务器上出现 CRLF 报错
+*.sh text eol=lf
+*.py text eol=lf
+Makefile text eol=lf
+
+# Windows 脚本保留 CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+
+# 二进制文件不进行文本转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.zip binary
+*.db binary

@@ -1,0 +1,1 @@
+"""Pydantic Schema 层：API 请求/响应模型（与 models 分离）。"""

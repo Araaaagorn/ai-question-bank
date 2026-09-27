@@ -1,0 +1,50 @@
+# ============ 环境与密钥（绝不入库） ============
+.env
+*.env.local
+.env.*
+!.env.example
+
+# ============ Python ============
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+backend/.coverage
+backend/htmlcov/
+
+# ============ Node / 前端 ============
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# ============ 运行时数据（不入库） ============
+data/
+*.db
+*.db-journal
+*.sqlite3
+uploads/
+backend/data/
+
+# ============ 日志 ============
+logs/
+*.log
+*.log.*
+
+# ============ IDE / 操作系统 ============
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ============ 本地临时文件 ============
+*.tmp
+*.bak
+*.orig
