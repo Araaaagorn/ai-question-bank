@@ -1,3 +1,6 @@
+/* 启用 POSIX 接口（sigaction 等），配合 -std=c11 使用 */
+#define _POSIX_C_SOURCE 200809L
+
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -35,7 +38,7 @@ int http_server_start(const AppConfig *cfg) {
     sigaction(SIGTERM, &sa, NULL);
 
     struct MHD_Daemon *daemon = MHD_start_daemon(
-        MHD_USE_INTERNAL_POLLING_THREAD | MHD_USE_ERROR_SOCKET,
+        MHD_USE_INTERNAL_POLLING_THREAD,
         (uint16_t)cfg->port, NULL, NULL,
         request_handler, (void *)cfg,
         MHD_OPTION_END);
