@@ -1,5 +1,5 @@
 # CI：每次 PR 与 main 推送时运行
-# 目标：确保任何 PR 在合入前 lint + 测试 + 构建全部通过（与分支保护联动）
+# 目标：任何 PR 在合入前必须 静态检查 + 构建 + 冒烟测试 全部通过（与分支保护联动）
 name: CI
 
 on:
@@ -8,44 +8,17 @@ on:
     branches: [main]
 
 jobs:
-  # 检查名称为 "backend"（分支保护 required_status_checks.contexts 使用该名称）
-  backend:
-    name: backend
+  # 检查名称为 "server"（分支保护 required_status_checks.contexts 使用该名称）
+  server:
+    name: server
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: backend/requirements-dev.txt
-      - name: 安装依赖
-        run: pip install -r requirements-dev.txt
-      - name: 静态检查（ruff）
-        run: ruff check app tests && ruff format --check app tests
-      - name: 单元测试（pytest）
-        run: pytest tests -v
-
-  # 检查名称为 "frontend"
-  frontend:
-    name: frontend
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - name: 安装依赖
-        run: npm install
-      - name: 静态检查（eslint）
-        run: npm run lint
-      - name: 构建（vite build）
-        run: npm run build
-      - name: 单元测试（vitest）
-        run: npm run test
+      - name: 安装系统依赖
+        run: sudo apt-get update && sudo apt-get install -y libmicrohttpd-dev libcurl4-openssl-dev libsqlite3-dev
+      - name: 静态检查（-fsyntax-only）
+        run: make -C server lint
+      - name: 构建（gcc -Wall -Wextra）
+        run: make -C server build
+      - name: 冒烟测试（健康检查 + 静态页）
+        run: make -C server test

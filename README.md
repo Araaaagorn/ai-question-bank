@@ -4,32 +4,30 @@
 
 功能预期详见 [`docs/AI题库项目整体预期功能说明书.md`](docs/AI题库项目整体预期功能说明书.md)。
 
-## 技术栈
+## 技术栈（C 语言）
 
 | 模块 | 技术 | 说明 |
 | --- | --- | --- |
-| backend | Python ≥ 3.10 · FastAPI · SQLAlchemy · Uvicorn | REST API，统一代理所有大模型调用，API Key 不出后端 |
-| frontend | Node ≥ 18 · Vue 3 · Vite | Web 客户端 |
-| 构建 | GNU Make | 根 `Makefile` 统一分派各模块 |
-| 部署 | systemd + Uvicorn（课程服务器） | 见 `docs/environment-setup.md` |
+| server（后端） | **C11** · libmicrohttpd · SQLite3 · libcurl · cJSON | HTTP 服务 + 存储 + AI 代理（API Key 不出后端） |
+| web（前端） | 纯 HTML / CSS / JS | 静态页面，由 C 服务端直接托管，无构建工具链 |
+| 构建 | GNU Make + gcc | 根 `Makefile` 统一分派各模块 |
+| 部署 | systemd（课程服务器 Linux） | 见 `docs/environment-setup.md` |
 
 ## 目录结构
 
 ```
 .
 ├── Makefile               # 根构建入口（模块化分派，支持新增语言/模块）
-├── backend/               # Python/FastAPI 后端
-│   ├── Makefile           # 后端构建规则（venv / lint / test / run）
-│   ├── requirements*.txt  # 依赖清单
-│   ├── app/               # 应用代码（api / core / models / schemas / services / db）
-│   ├── tests/             # pytest 测试
-│   └── scripts/           # 数据库初始化等
-├── frontend/              # Vue3 + Vite 前端
-│   ├── Makefile
-│   ├── package.json
-│   └── src/
+├── server/                # C 后端
+│   ├── Makefile           # 编译规则（lint / build / test / run / clean）
+│   ├── include/           # 头文件（config/db/http/routes/ai）
+│   ├── src/               # 源码（main/http_server/routes/db/ai_client/config）
+│   ├── third_party/       # cJSON（单文件库，MIT 协议）
+│   ├── tests/             # 冒烟测试脚本
+│   └── .env.example       # 环境变量配置示例
+├── web/                   # 静态前端（index.html / css / js）
 ├── docs/                  # 需求文档、架构说明、环境部署指南
-├── scripts/               # 仓库级脚本：环境检查/安装、GitHub 初始化
+├── scripts/               # 环境检查/安装、GitHub 初始化
 ├── deploy/                # 部署配置（systemd 服务示例）
 └── .github/               # PR 模板、CODEOWNERS、CI workflow、分支保护
 ```
@@ -41,35 +39,35 @@
 ### 在课程服务器（Linux）上
 
 ```bash
-# 1. 环境检查与系统依赖安装（python3>=3.10, node>=18, make, git）
+# 1. 环境检查与系统依赖安装（gcc / make / libmicrohttpd / libcurl / sqlite3）
 bash scripts/check_env.sh          # 先检查，缺什么看提示
-bash scripts/install_env.sh        # 按提示安装系统依赖（需 sudo，可只装缺的）
+sudo bash scripts/install_env.sh   # 安装系统依赖（可只装缺的）
 
-# 2. 安装项目依赖并运行测试
-make setup                         # = 环境检查 + 安装 backend/frontend 全部依赖
-make lint && make test             # 静态检查 + 测试
-make -C backend run                # 启动后端 http://<服务器IP>:8000
-make -C frontend run               # 启动前端 http://<服务器IP>:5173
+# 2. 构建 + 测试 + 运行
+make build && make test            # 编译 + 冒烟测试（健康检查 + 静态页）
+make -C server run                 # 启动服务 http://<服务器IP>:8000
+curl http://<服务器IP>:8000/api/v1/health   # 应返回 {"status":"ok"}
 ```
 
 ### 本地 Windows 开发
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/check_env.ps1   # 检查环境
-# 后端
-cd backend
-python -m venv .venv
-.venv\Scripts\pip install -r requirements-dev.txt
-.venv\Scripts\python -m uvicorn app.main:app --reload --port 8000
-# 前端
-cd frontend
-npm install
-npm run dev
-```
+建议使用 **WSL（Ubuntu）** 或直接在课程服务器上开发（C 后端依赖 Linux 库）。
+`scripts/check_env.ps1` 可检查 git / gcc / make 是否就绪。
 
 ### 配置
 
-后端首次运行前复制 `backend/.env.example` 为 `backend/.env` 并填写（数据库、密钥、AI API 等）。`.env` 已被 `.gitignore` 排除，**严禁**提交。
+服务端通过**环境变量**读取配置（默认值见 `server/src/config.c`）：
+
+```bash
+PORT=8000                       # 监听端口
+DATABASE_PATH=data/ai_question_bank.db
+WEB_ROOT=../web                 # 静态页根目录（相对 server/ 工作目录）
+AI_API_BASE_URL=https://api.openai.com/v1   # 大模型（OpenAI 兼容协议）
+AI_API_KEY=                     # 仅后端持有，不暴露前端
+AI_MODEL=gpt-4o-mini
+```
+
+生产部署：复制 `server/.env.example` 为 `server/.env` 填写，由 systemd `EnvironmentFile` 加载。
 
 ## 协作规范
 

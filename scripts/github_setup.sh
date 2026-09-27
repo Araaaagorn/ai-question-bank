@@ -31,7 +31,7 @@ git push -u origin main
 echo ""
 echo "== 2/3 启用 main 分支保护（PR + CI + 至少1人 Review）=="
 # 分支保护要求 required_status_checks 的 contexts 与 CI 实际检查名一致
-# （本项目 CI job 名为 backend / frontend）。若 GitHub 上检查名不同，
+# （本项目 CI job 名为 server）。若 GitHub 上检查名不同，
 # 用 gh pr checks <PR号> 查看后修改 branch_protection.json。
 gh api -X PUT "repos/$REPO/branches/main/protection" \
   --input "$PAYLOAD" >/dev/null

@@ -17,11 +17,11 @@
 # 全局兜底（可选）：未单独指定的路径由以下负责人兜底
 # * @owner-github-username
 
-# 后端代码
-# backend/ @backend-owner-github-username
+# C 后端代码
+# server/ @server-owner-github-username
 
-# 前端代码
-# frontend/ @frontend-owner-github-username
+# 前端静态页
+# web/ @web-owner-github-username
 
 # 构建 / CI / 脚本
 # /scripts/ /Makefile /deploy/ @ci-owner-github-username

@@ -1,4 +1,6 @@
-# 本地 Windows 开发环境检查
+# 本地 Windows 开发环境检查（C 技术栈）
+# 说明：C 后端依赖 Linux 库（libmicrohttpd/libcurl/sqlite3），
+#       Windows 上建议使用 WSL（Ubuntu）或直接在课程服务器上开发。
 # 用法：powershell -ExecutionPolicy Bypass -File scripts\check_env.ps1
 
 $missing = @()
@@ -15,17 +17,16 @@ function Check-Tool {
     }
 }
 
-Write-Host "== 本地 Windows 开发环境检查 ==" -ForegroundColor Cyan
+Write-Host "== 本地 Windows 开发环境检查（C 技术栈）==" -ForegroundColor Cyan
 
 Check-Tool "git"    { git --version } "未安装 git (https://git-scm.com)"
-Check-Tool "python" { python --version } "未安装 Python >= 3.10 (https://python.org)"
-Check-Tool "node"   { node --version } "未安装 Node >= 18 (https://nodejs.org)"
-Check-Tool "npm"    { npm --version } "未安装 npm (随 Node 安装)"
+Check-Tool "gcc"    { gcc --version } "未安装 gcc（Windows 建议安装 WSL 后在其中开发）"
+Check-Tool "make"   { make --version } "未安装 make"
 
 Write-Host ""
 if ($missing.Count -eq 0) {
-    Write-Host "✔ 环境完整。后端/前端安装命令见 README.md 的『本地 Windows 开发』章节。" -ForegroundColor Green
+    Write-Host "✔ 基础工具齐全。注意：完整构建需在 WSL/课程服务器上完成（依赖 Linux 库）。" -ForegroundColor Green
 } else {
     Write-Host ("✘ 缺失组件: {0}" -f ($missing -join ', ')) -ForegroundColor Red
-    Write-Host "  安装后重新运行本脚本确认。"
+    Write-Host "  建议：启用 WSL（wsl --install）后在 Ubuntu 内按 docs/environment-setup.md 操作。"
 }

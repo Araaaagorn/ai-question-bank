@@ -2,7 +2,7 @@
 # AI+题库智能教学平台 —— 根构建文件（GNU Make）
 #
 # 设计原则：模块化分派。
-#   每个子模块（backend / frontend / 未来新增模块）自带自己的 Makefile，
+#   每个子模块（server / 未来新增模块）自带自己的 Makefile，
 #   根 Makefile 只负责把目标分派到对应目录。
 #
 # 新增模块（例如新增一个 Go / Rust 微服务）只需：
@@ -14,7 +14,7 @@
 SHELL := /bin/bash
 
 # 所有需要纳入统一构建的模块目录（按需增删）
-MODULES := backend frontend
+MODULES := server
 
 .PHONY: help setup env-check install lint test build run clean $(MODULES)
 
@@ -24,26 +24,25 @@ help: ## 显示所有可用目标
 	@echo "用法（在仓库根目录执行）："
 	@echo "  make help            显示本帮助"
 	@echo "  make env-check       检查本机/服务器环境依赖"
-	@echo "  make setup           首次初始化：环境检查 + 安装全部模块依赖"
-	@echo "  make install         安装所有模块依赖"
+	@echo "  make setup           首次初始化：环境检查 + 安装系统依赖"
 	@echo "  make lint            运行所有模块静态检查"
-	@echo "  make test            运行所有模块测试"
+	@echo "  make test            运行所有模块测试（含冒烟测试）"
 	@echo "  make build           构建所有模块产物"
 	@echo "  make run             开发模式启动（提示各模块启动命令）"
 	@echo "  make clean           清理各模块构建产物与缓存"
 	@echo ""
-	@echo "也支持模块级目标，如：make install-backend  make test-frontend"
+	@echo "也支持模块级目标，如：make build-server  make test-server"
 	@echo "当前模块：$(MODULES)"
 
 setup: env-check install ## 首次初始化
-	@echo "✔ 环境准备完成"
+	@echo "✔ 环境准备完成，可执行 make build && make test"
 
 env-check: ## 检查环境依赖（Linux 服务器）
 	@bash scripts/check_env.sh
 
 # -----------------------------------------------------------------------------
 # 模块目标分派规则
-# 对 MODULES 中每个目录 X，生成 install-X / test-X / ... 目标，
+# 对 MODULES 中每个目录 X，生成 build-X / test-X 等目标，
 # 统一执行 `make -C X <target>`；目录缺少 Makefile 时跳过并提示。
 # -----------------------------------------------------------------------------
 
@@ -74,6 +73,6 @@ clean-%:
 	else echo "⚠ 跳过 $*（目录下没有 Makefile）"; fi
 
 run: ## 开发模式启动
-	@echo "请分别在不同终端启动各模块："
-	@echo "  make -C backend  run    # 后端 API（http://localhost:8000）"
-	@echo "  make -C frontend run    # 前端 Dev Server（http://localhost:5173）"
+	@echo "请执行："
+	@echo "  make -C server run    # 后端服务（http://localhost:8000）"
+	@echo "  web/ 为静态资源，由服务端直接托管，无需独立前端服务"

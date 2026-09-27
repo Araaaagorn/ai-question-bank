@@ -1,9 +1,10 @@
 # 统一换行符与文本属性
 * text=auto
 
-# Shell / Python 脚本统一 LF，避免在 Linux 服务器上出现 CRLF 报错
+# Shell / C 源码统一 LF，避免在 Linux 服务器上出现 CRLF 报错
 *.sh text eol=lf
-*.py text eol=lf
+*.c text eol=lf
+*.h text eol=lf
 Makefile text eol=lf
 
 # Windows 脚本保留 CRLF
