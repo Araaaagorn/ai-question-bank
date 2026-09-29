@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# ============================================================================
+# pre-commit hook：提交前运行测试，确保代码不会破坏已有功能
+#
+# 流程：
+#   1. git stash --keep-index 暂存未暂存的更改（只测试即将提交的代码）
+#   2. make clean
+#   3. make build
+#   4. make test（全部通过则放行，任意失败则拒绝提交）
+#   5. 返还 stash
+#
+# commit message 标记由 commit-msg hook 追加。
+#
+# 安装方式：
+#   cp scripts/githooks/pre-commit .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+# ============================================================================
+set -euo pipefail
+
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+[ -n "$REPO_ROOT" ] || { echo -e "${RED}[pre-commit] 无法获取仓库根目录${NC}"; exit 1; }
+
+cd "$REPO_ROOT"
+
+echo -e "${CYAN}[pre-commit] 开始预提交测试...${NC}"
+
+# ── 第 1 步：stash 未暂存的更改 ──
+STASH_NAME="pre-commit-hook-$(date +%s)"
+STASH_OUT=$(git stash --keep-index --include-untracked --message "$STASH_NAME" 2>&1 || true)
+
+HAS_STASH=false
+if ! echo "$STASH_OUT" | grep -q "No local changes to save"; then
+    if git stash list 2>/dev/null | grep -q "$STASH_NAME"; then
+        HAS_STASH=true
+    fi
+fi
+
+pop_stash() {
+    if [ "$HAS_STASH" = true ]; then
+        git stash pop 2>/dev/null || true
+    fi
+}
+
+# ── 第 2 步：make clean ──
+echo -e "${CYAN}[pre-commit] 1/3: make clean${NC}"
+(cd "$REPO_ROOT/server" && make clean 2>&1) || { echo -e "${RED}[pre-commit] ✘ make clean 失败${NC}"; pop_stash; exit 1; }
+
+# ── 第 3 步：make build ──
+echo -e "${CYAN}[pre-commit] 2/3: make build${NC}"
+(cd "$REPO_ROOT/server" && make build 2>&1) || { echo -e "${RED}[pre-commit] ✘ make build 失败${NC}"; pop_stash; exit 1; }
+
+# ── 第 4 步：make test ──
+echo -e "${CYAN}[pre-commit] 3/3: make test${NC}"
+(cd "$REPO_ROOT/server" && make test 2>&1) || { echo -e "${RED}[pre-commit] ✘ make test 失败${NC}"; pop_stash; exit 1; }
+
+# ── 返还 stash ──
+pop_stash
+
+echo -e "${GREEN}[pre-commit] ✔ 全部测试通过，批准提交${NC}"
+exit 0
