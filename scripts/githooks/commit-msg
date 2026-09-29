@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# ============================================================================
+# commit-msg hook：在提交信息末尾追加 pre-commit 测试通过标记
+#
+# 仅在 COMMIT_EDITMSG 中尚未包含该标记时追加，避免重复。
+#
+# 安装方式：
+#   cp scripts/githooks/commit-msg .git/hooks/commit-msg
+#   chmod +x .git/hooks/commit-msg
+# ============================================================================
+set -euo pipefail
+
+COMMIT_MSG_FILE="$1"
+
+# 仅当提交信息中尚未包含标记时才追加
+if ! grep -q "^pre commit test PASS" "$COMMIT_MSG_FILE" 2>/dev/null; then
+    echo "" >> "$COMMIT_MSG_FILE"
+    echo "pre commit test PASS" >> "$COMMIT_MSG_FILE"
+fi
+
+exit 0

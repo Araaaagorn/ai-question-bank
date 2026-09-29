@@ -34,3 +34,4 @@ Desktop.ini
 *.tmp
 *.bak
 *.orig
+pre-commit-test
