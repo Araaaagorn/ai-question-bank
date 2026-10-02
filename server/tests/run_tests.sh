@@ -8,7 +8,7 @@
 #   bash tests/run_tests.sh health auth        # 运行多个测试目录
 #
 # 每个测试目录下包含 case_*.sh，每个 case 独立运行、自给自足。
-# 环境变量：TEST_PORT（默认 8099）、DATABASE_PATH（默认 data/test_all.db）
+# 环境变量：TEST_PORT（默认 8099）、DATABASE_PATH（可选，不可指向已有文件）
 # ============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -27,9 +27,15 @@ TOTAL_CASES=0
 TEST_PORT="${TEST_PORT:-8099}"
 export TEST_PORT
 export PORT="$TEST_PORT"
-DB_PATH="${DATABASE_PATH:-data/test_all.db}"
-export DATABASE_PATH
-SERVER_LOG="/tmp/aqb_test_server.log"
+TEST_TMP_DIR=$(mktemp -d)
+DB_PATH="${DATABASE_PATH:-$TEST_TMP_DIR/test.db}"
+export DATABASE_PATH="$DB_PATH"
+SERVER_LOG="$TEST_TMP_DIR/server.log"
+trap 'rm -rf "$TEST_TMP_DIR"' EXIT
+if [ -e "$DB_PATH" ]; then
+    echo "拒绝覆盖已有数据库：$DB_PATH；请使用临时测试库"
+    exit 1
+fi
 
 # ── 解析参数 ──
 if [ $# -eq 0 ]; then
@@ -63,10 +69,6 @@ fi
 SERVER_PID=""
 
 start_server() {
-    rm -f "$DB_PATH"
-    kill "$(lsof -t -i ":$TEST_PORT" 2>/dev/null)" 2>/dev/null || true
-    sleep 0.3
-
     ./ai-question-bank-server >"$SERVER_LOG" 2>&1 &
     SERVER_PID=$!
 
@@ -92,11 +94,10 @@ stop_server() {
         kill "$SERVER_PID" 2>/dev/null || true
         wait "$SERVER_PID" 2>/dev/null || true
     fi
-    rm -f "$DB_PATH"
     SERVER_PID=""
 }
 
-cleanup() { stop_server; }
+cleanup() { stop_server; rm -rf "$TEST_TMP_DIR"; }
 trap cleanup EXIT
 
 # ── 主流程 ──
