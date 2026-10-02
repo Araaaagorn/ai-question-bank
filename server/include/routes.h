@@ -8,6 +8,7 @@
 #include "config.h"
 
 /* 请求分发：/api/v1/ 路径为 JSON API；其余路径 → 静态文件（web/ 目录）。
+ * GET /api/v1/questions 与 /api/v1/questions/{id} 需有效 Bearer token。
  * body / body_len 为 POST 请求体（GET 请求时 body 为 NULL）。 */
 enum MHD_Result route_dispatch(struct MHD_Connection *conn, const char *url,
                                const char *method, const char *body,

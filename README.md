@@ -69,6 +69,8 @@ AI_MODEL=gpt-4o-mini
 
 生产部署：复制 `server/.env.example` 为 `server/.env` 填写，由 systemd `EnvironmentFile` 加载。
 
+固定题目列表与详情的字段约定、登录要求及回归用例见 [docs/questions.md](docs/questions.md)。
+
 ## 协作规范
 
 - **分支模型**：`main` 为受保护分支，禁止直接推送；所有改动走 feature 分支 + Pull Request。
