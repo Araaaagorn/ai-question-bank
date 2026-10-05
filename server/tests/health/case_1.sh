@@ -13,14 +13,14 @@ FAIL=0
 ok()   { PASS=$((PASS+1)); echo -e "  ${GREEN}[PASS]${NC} $1"; }
 fail() { FAIL=$((FAIL+1)); echo -e "  ${RED}[FAIL]${NC} $1"; }
 
-PORT="${TEST_PORT:-8099}"
+PORT="${TEST_PORT:-${PORT:-8099}}"
 
 # 检查点 1：健康检查
-BODY=$(curl -s "http://127.0.0.1:$PORT/api/v1/health")
+BODY=$(curl -s --noproxy '*' "http://127.0.0.1:$PORT/api/v1/health")
 echo "$BODY" | grep -q '"status":"ok"' && ok "健康检查返回 status=ok" || fail "健康检查: $BODY"
 
 # 检查点 2：静态页服务
-CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/")
+CODE=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/")
 [ "$CODE" = "200" ] && ok "静态页返回 200" || fail "静态页 HTTP $CODE"
 
 [ "$FAIL" -eq 0 ] || exit 1

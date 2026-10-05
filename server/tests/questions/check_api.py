@@ -7,6 +7,11 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+# 强制直连 localhost，绕过系统代理对 127.0.0.1 的重定向
+import urllib.request
+proxy_handler = urllib.request.ProxyHandler({})
+urllib.request.install_opener(urllib.request.build_opener(proxy_handler))
+
 base = "http://127.0.0.1:" + os.getenv("TEST_PORT", "8099")
 
 def request(path, token=None, method="GET", data=None):
