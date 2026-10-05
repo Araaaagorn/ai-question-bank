@@ -1,5 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
+#include <errno.h>
+#include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,6 +61,7 @@ static enum MHD_Result reply_json(struct MHD_Connection *conn, unsigned int code
                                   const char *json) {
     struct MHD_Response *resp = MHD_create_response_from_buffer(
         strlen(json), (void *)json, MHD_RESPMEM_MUST_COPY);
+    if (resp == NULL) return MHD_NO;
     MHD_add_response_header(resp, "Content-Type", "application/json; charset=utf-8");
     enum MHD_Result ret = MHD_queue_response(conn, code, resp);
     MHD_destroy_response(resp);
@@ -236,6 +239,66 @@ static enum MHD_Result handle_me(struct MHD_Connection *conn) {
     return ret;
 }
 
+
+/* ── 固定题目接口（管理员与学生使用同一只读接口） ── */
+
+static enum MHD_Result handle_questions(struct MHD_Connection *conn,
+                                        const char *url, const char *method,
+                                        const AppConfig *cfg) {
+    const char *auth = MHD_lookup_connection_value(conn, MHD_HEADER_KIND, "Authorization");
+    if (session_validate(extract_bearer_token(auth)) == NULL) {
+        return reply_json(conn, MHD_HTTP_UNAUTHORIZED,
+                          "{\"error\":\"未登录或 token 已过期\"}");
+    }
+    if (strcmp(method, "GET") != 0) {
+        struct MHD_Response *resp = MHD_create_response_from_buffer(
+            sizeof("{\"error\":\"method not allowed\"}") - 1,
+            (void *)"{\"error\":\"method not allowed\"}", MHD_RESPMEM_PERSISTENT);
+        if (resp == NULL) return MHD_NO;
+        MHD_add_response_header(resp, "Content-Type", "application/json; charset=utf-8");
+        MHD_add_response_header(resp, "Allow", "GET");
+        enum MHD_Result ret = MHD_queue_response(conn, MHD_HTTP_METHOD_NOT_ALLOWED, resp);
+        MHD_destroy_response(resp);
+        return ret;
+    }
+
+    char *json = NULL;
+    DbQuestionResult result;
+    if (strcmp(url, "/api/v1/questions") == 0) {
+        result = db_list_questions(cfg->db_path, &json);
+    } else {
+        const char *id_text = url + sizeof("/api/v1/questions/") - 1;
+        /* 只接受完整的正整数，拒绝符号、小数、溢出与额外路径段。 */
+        if (*id_text == '\0') {
+            return reply_json(conn, MHD_HTTP_NOT_FOUND, "{\"error\":\"question not found\"}");
+        }
+        for (const char *p = id_text; *p != '\0'; p++) {
+            if (*p < '0' || *p > '9') {
+                return reply_json(conn, MHD_HTTP_NOT_FOUND,
+                                  "{\"error\":\"question not found\"}");
+            }
+        }
+        errno = 0;
+        char *end = NULL;
+        long long id = strtoll(id_text, &end, 10);
+        if (errno == ERANGE || end == id_text || *end != '\0' || id <= 0) {
+            return reply_json(conn, MHD_HTTP_NOT_FOUND, "{\"error\":\"question not found\"}");
+        }
+        result = db_get_question(cfg->db_path, (int64_t)id, &json);
+    }
+
+    if (result == DB_QUESTION_NOT_FOUND) {
+        return reply_json(conn, MHD_HTTP_NOT_FOUND, "{\"error\":\"question not found\"}");
+    }
+    if (result != DB_QUESTION_OK) {
+        return reply_json(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                          "{\"error\":\"query questions failed\"}");
+    }
+    enum MHD_Result ret = reply_json(conn, MHD_HTTP_OK, json);
+    cJSON_free(json);
+    return ret;
+}
+
 /* ── 静态文件服务 ── */
 
 static const char *content_type_for(const char *path) {
@@ -326,6 +389,12 @@ enum MHD_Result route_dispatch(struct MHD_Connection *conn, const char *url,
     if (strcmp(method, "GET") == 0 &&
         strcmp(url, "/api/v1/auth/me") == 0) {
         return handle_me(conn);
+    }
+
+    /* 只匹配题目列表及详情路径；沿用现有会话校验。 */
+    if (strcmp(url, "/api/v1/questions") == 0 ||
+        strncmp(url, "/api/v1/questions/", sizeof("/api/v1/questions/") - 1) == 0) {
+        return handle_questions(conn, url, method, cfg);
     }
 
     /* 其他 /api/ 路径 → 404 */
