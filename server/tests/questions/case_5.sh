@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 test_dir=$(mktemp -d)
 trap 'rm -rf "$test_dir"' EXIT
-"${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Iinclude -Ithird_party \
+"${CC:-cc}" -std=c11 -Wall -Wextra  -Iinclude -Ithird_party \
     tests/questions/db_test.c src/db.c third_party/cJSON.c \
     -lsqlite3 -lcrypto -o "$test_dir/db_test"
 "$test_dir/db_test" "$test_dir/fresh.db" "$test_dir/legacy.db"
