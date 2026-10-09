@@ -188,6 +188,14 @@ void kv_free_str_array(char **arr);
  */
 int kv_str_to_int(const char *str, int *out);
 
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 以下类型转换函数当前未被任何调用方使用（死代码），保留注释以供参考。
+ * 如需启用，取消注释并在 kv_store.c 中恢复对应的实现。
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+#if 0
+
 /**
  * @brief 将字符串解析为 double。
  * @param str  输入字符串。
@@ -213,5 +221,7 @@ int kv_str_array_to_int(char **strs, int **out, int *count);
  * @return int  0 全部成功；-1 存在非数字项（此时 *out = NULL, *count = 0）。
  */
 int kv_str_array_to_double(char **strs, double **out, int *count);
+
+#endif /* 死代码 */
 
 #endif /* AIQB_KV_STORE_H */
