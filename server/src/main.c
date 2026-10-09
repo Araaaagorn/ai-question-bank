@@ -19,6 +19,7 @@ int main(void) {
     rc = sqlite3_open(cfg.db_path, &cfg.db);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "✘ 打开数据库连接失败: %s\n", sqlite3_errmsg(cfg.db));
+        sqlite3_close(cfg.db);
         return 1;
     }
 

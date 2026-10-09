@@ -352,6 +352,11 @@ static void test_str_to_int(sqlite3 *db) {
     PASS();
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 以下测试函数对应 kv_store.c 中已注释的死代码函数。
+ * 若恢复那些函数，取消下方注释并取消 main() 中对应的调用注释。
+ * ═══════════════════════════════════════════════════════════════════════════ */
+#if 0
 static void test_str_to_double(sqlite3 *db) {
     (void)db;
     TEST("kv_str_to_double");
@@ -425,6 +430,7 @@ static void test_str_array_to_double(sqlite3 *db) {
 
     PASS();
 }
+#endif
 
 int main(void) {
     sqlite3 *db = NULL;
@@ -450,9 +456,11 @@ int main(void) {
     test_multiple_namespaces_independence(db);
     test_free_str_array(db);
     test_str_to_int(db);
+/*
     test_str_to_double(db);
     test_str_array_to_int(db);
     test_str_array_to_double(db);
+*/
 
     sqlite3_close(db);
 

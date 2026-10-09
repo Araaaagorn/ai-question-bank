@@ -178,7 +178,8 @@ int db_seed_questions(sqlite3 *db) {
             kv_set(db, "qdata", questions[i].key, "type", questions[i].type) != 0 ||
             kv_set(db, "qdata", questions[i].key, "knowledge_points", questions[i].knowledge_points) != 0 ||
             kv_set(db, "qdata", questions[i].key, "seed_key", questions[i].seed_key) != 0 ||
-            kv_set(db, "qdata", questions[i].key, "teacher_id", "1") != 0) {
+            kv_set(db, "qdata", questions[i].key, "teacher_id", "1") != 0 ||
+            kv_set(db, "qdata", questions[i].key, "status", "active") != 0) {
             fprintf(stderr, "✘ 写入题目 '%s' 失败\n", questions[i].key);
             return -1;
         }

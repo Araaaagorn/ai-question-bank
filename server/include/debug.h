@@ -5,9 +5,9 @@
  * @file debug.h
  * @brief 全局调试日志基础设施。
  *
- * 启用/禁用方式：
- *   定义 DEBUG       → 调试日志生效（默认开启）
- *   将 DEBUG 改为 DEBUGx → 调试日志全部编译为空（零开销）
+ * 启用/禁用方式（编译时开关）：
+ *   编译时添加 -DDEBUG 或 -DKV_DEBUG_ON  → 调试日志生效
+ *   不加                                    → 调试日志全部编译为空（零开销）
  *
  * 使用方式：
  *   #include "debug.h"
@@ -16,11 +16,7 @@
 
 #include <stdio.h>
 
-#define DEBUG
-/* ── 若要禁用 debug 输出，将上面一行改为： ── */
-/* #define DEBUGx                                                         */
-
-#ifdef DEBUG
+#ifdef KV_DEBUG_ON
 
 /**
  * @brief 调试日志宏。
@@ -35,6 +31,6 @@
 
 #define KV_DEBUG(fmt, ...) ((void)0)
 
-#endif /* DEBUG */
+#endif /* KV_DEBUG_ON */
 
 #endif /* AIQB_DEBUG_H */

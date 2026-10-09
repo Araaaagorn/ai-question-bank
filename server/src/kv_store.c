@@ -25,11 +25,17 @@
  *                      返回 "" 表示名称非法。
  * @note  返回值不可 free()，不可跨两次调用保存。
  */
+/* 最大合法 namespace 长度（字符数，不含前缀） */
+#define MAX_NS_LEN 128
+
 static const char *safe_table_name(const char *ns) {
     static char buf[256];
     int j = 0;
     int has_invalid = 0;
-    for (int i = 0; ns[i] != '\0' && j < (int)sizeof(buf) - 1; i++) {
+    int overlong = 0;
+    for (int i = 0; ns[i] != '\0'; i++) {
+        if (i >= MAX_NS_LEN) { overlong = 1; break; }
+        if (j >= (int)sizeof(buf) - 1) { overlong = 1; break; }
         char c = ns[i];
         if (isalnum((unsigned char)c) || c == '_') {
             buf[j++] = c;
@@ -39,8 +45,8 @@ static const char *safe_table_name(const char *ns) {
     }
     buf[j] = '\0';
 
-    /* 如果含有无效字符，或表名为空，或首字符是数字，返回无效标记 */
-    if (has_invalid || j == 0 || (buf[0] >= '0' && buf[0] <= '9')) {
+    /* 如果含有无效字符，或表名为空，或首字符是数字，或超长，返回无效标记 */
+    if (has_invalid || j == 0 || (buf[0] >= '0' && buf[0] <= '9') || overlong) {
         buf[0] = '\0';
     }
     return buf;
@@ -125,7 +131,7 @@ static int build_delete_key_sql(const char *table, char *sql, size_t sql_sz) {
  */
 static int build_list_keys_sql(const char *table, char *sql, size_t sql_sz) {
     int n = snprintf(sql, sql_sz,
-        "SELECT DISTINCT key_name FROM %s ORDER BY key_name",
+        "SELECT DISTINCT key_name FROM %s ORDER BY CAST(key_name AS INTEGER)",
         table);
     return (n < 0 || (size_t)n >= sql_sz) ? -1 : 0;
 }
@@ -330,6 +336,7 @@ char *kv_get_all(sqlite3 *db, const char *namespace, const char *key) {
     sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
 
     cJSON *arr = cJSON_CreateArray();
+    if (arr == NULL) { sqlite3_finalize(stmt); return NULL; }
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         const char *vn = (const char *)sqlite3_column_text(stmt, 0);
         const char *vl = (const char *)sqlite3_column_text(stmt, 1);
@@ -392,6 +399,9 @@ int kv_delete_key(sqlite3 *db, const char *namespace, const char *key) {
 int kv_drop_namespace(sqlite3 *db, const char *namespace) {
     if (db == NULL || namespace == NULL) return -1;
 
+    /* 只允许删除已在 kv_tables 注册的 namespace，防止误删普通表 */
+    if (!namespace_exists(db, namespace)) return -1;
+
     const char *safe = safe_table_name(namespace);
     if (safe[0] == '\0') return -1;
 
@@ -441,7 +451,9 @@ char **kv_list_namespaces(sqlite3 *db, int *count) {
     int idx = 0;
     while (sqlite3_step(stmt) == SQLITE_ROW && idx < cap) {
         const char *val = (const char *)sqlite3_column_text(stmt, 0);
-        arr[idx++] = val ? strdup(val) : strdup("");
+        char *dup = val ? strdup(val) : strdup("");
+        if (dup == NULL) break;
+        arr[idx++] = dup;
     }
     arr[idx] = NULL;
     sqlite3_finalize(stmt);
@@ -477,7 +489,9 @@ char **kv_list_keys(sqlite3 *db, const char *namespace, int *count) {
     int idx = 0;
     while (sqlite3_step(stmt) == SQLITE_ROW && idx < cap) {
         const char *val = (const char *)sqlite3_column_text(stmt, 0);
-        arr[idx++] = val ? strdup(val) : strdup("");
+        char *dup = val ? strdup(val) : strdup("");
+        if (dup == NULL) break;
+        arr[idx++] = dup;
     }
     arr[idx] = NULL;
     sqlite3_finalize(stmt);
@@ -517,7 +531,9 @@ char **kv_list_value_names(sqlite3 *db, const char *namespace,
     int idx = 0;
     while (sqlite3_step(stmt) == SQLITE_ROW && idx < cap) {
         const char *val = (const char *)sqlite3_column_text(stmt, 0);
-        arr[idx++] = val ? strdup(val) : strdup("");
+        char *dup = val ? strdup(val) : strdup("");
+        if (dup == NULL) break;
+        arr[idx++] = dup;
     }
     arr[idx] = NULL;
     sqlite3_finalize(stmt);
@@ -552,6 +568,11 @@ int kv_str_to_int(const char *str, int *out) {
     return 0;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 以下类型转换函数当前未被任何调用方使用（死代码），保留注释以供参考。
+ * 如需启用，取消注释并在 kv_store.h 中恢复对应的声明。
+ * ═══════════════════════════════════════════════════════════════════════════ */
+#if 0
 int kv_str_to_double(const char *str, double *out) {
     if (str == NULL || out == NULL) return -1;
     char *end = NULL;
@@ -609,3 +630,4 @@ int kv_str_array_to_double(char **strs, double **out, int *count) {
     *count = n;
     return 0;
 }
+#endif /* 死代码结束 */

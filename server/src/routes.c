@@ -249,7 +249,7 @@ static cJSON *kv_to_question(const char *key, sqlite3 *db) {
     if (json == NULL) return NULL;
 
     cJSON *arr = cJSON_Parse(json);
-    free(json);
+    cJSON_free(json);
     if (arr == NULL || !cJSON_IsArray(arr)) { cJSON_Delete(arr); return NULL; }
 
     /* 无数据 = 题目不存在 */
@@ -257,7 +257,14 @@ static cJSON *kv_to_question(const char *key, sqlite3 *db) {
     if (size == 0) { cJSON_Delete(arr); return NULL; }
 
     cJSON *obj = cJSON_CreateObject();
-    cJSON_AddNumberToObject(obj, "id", atoi(key));
+    if (obj == NULL) { cJSON_Delete(arr); return NULL; }
+    {
+        int id_val;
+        if (kv_str_to_int(key, &id_val) == 0 && id_val > 0)
+            cJSON_AddNumberToObject(obj, "id", id_val);
+        else
+            cJSON_AddNumberToObject(obj, "id", 0);
+    }
 
     for (int i = 0; i < size; i++) {
         cJSON *item = cJSON_GetArrayItem(arr, i);
