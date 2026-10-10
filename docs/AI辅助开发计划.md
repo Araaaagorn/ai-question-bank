@@ -54,10 +54,10 @@
 
 | 角色 | 追加喂入 |
 |------|----------|
-| 后端（牛/李/刘） | `docs/api.md` 接口定义、`docs/architecture.md`、`server/include/*.h` 头文件 |
-| 卢（安全/测试） | `.gitignore`、`server/.env.example`、现有冒烟测试 |
-| 前端（曹/王） | `web/index.html`、`web/css/style.css`、`web/js/app.js`、`docs/api.md` |
-| 文档（戴） | `AGENT.md` 现有内容、功能说明书 |
+| 后端（牛宇歌/李俊熠/刘英哲） | `docs/api.md` 接口定义、`docs/architecture.md`、`server/include/*.h` 头文件 |
+| 卢恒毅（安全/测试） | `.gitignore`、`server/.env.example`、现有冒烟测试 |
+| 前端（曹渲东/王英杰） | `web/index.html`、`web/css/style.css`、`web/js/app.js`、`docs/api.md` |
+| 文档（戴儒骋） | `AGENT.md` 现有内容、功能说明书 |
 
 ---
 
@@ -169,7 +169,7 @@ Prompt：
 - 使用 sed 而非 grep/cut 解析 token
 ```
 
-### 4.5 曹、王 — 前端
+### 4.5 曹渲东、王英杰 — 前端
 
 ```
 任务示例：实现题库列表页
