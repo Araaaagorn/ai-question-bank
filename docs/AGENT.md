@@ -207,7 +207,7 @@ gcc -std=c11 -Wall -Wextra  → 零警告
 ```
 路由层（routes.c）    →  只做分发与参数处理
 业务层（services_*.c）→  业务规则
-数据层（db.c）        →  关系型数据 SQL 读写（users 表等）
+数据层（db.c）        →  关系型数据 SQL 读写（用户数据经 kv_store `users` namespace 存取）
 存储层（kv_store.c）  →  目录式键值数据（namespace / key / value_name / value）
 AI 层（ai_client.c）  →  大模型代理调用
 ```
