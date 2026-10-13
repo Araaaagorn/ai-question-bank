@@ -1,7 +1,8 @@
 # AI+题库智能教学平台 — AI 辅助开发计划
 
-> 版本：v1.1 | 日期：2026-10-13 | 维护：戴儒骋、卢恒毅
+> 版本：v1.2 | 日期：2026-10-13 | 维护：戴儒骋、卢恒毅
 > v1.1 变更：纳入 kv_store 存储层与前端三页等首轮实践成果；更新测试体系与投喂文件清单
+> v1.2 变更：修正第四节角色分工——补入戴儒骋（文档/项目经理），卢恒毅加入后端组并补后端任务示例
 
 ---
 
@@ -67,8 +68,8 @@
 
 | 角色 | 追加喂入 |
 |------|----------|
-| 后端（牛宇歌/李俊熠/刘英哲） | 模块接口文档（`docs/auth.md`/`docs/questions.md`）、`docs/kvstore.md`（涉及存储时必喂）、`docs/architecture.md`、`server/include/*.h` 头文件（含 `kv_store.h`） |
-| 卢恒毅（安全/测试） | `.gitignore`、`server/.env.example`、现有测试（`server/tests/*/case_*.sh`） |
+| 后端（牛宇歌/李俊熠/刘英哲/卢恒毅） | 模块接口文档（`docs/auth.md`/`docs/questions.md`）、`docs/kvstore.md`（涉及存储时必喂）、`docs/architecture.md`、`server/include/*.h` 头文件（含 `kv_store.h`） |
+| 卢恒毅（安全/测试/CI） | `.gitignore`、`server/.env.example`、现有测试（`server/tests/*/case_*.sh`） |
 | 前端（曹渲东/王英杰） | `web/index.html`、`web/css/style.css`、`web/js/`（app/api/auth/questions/chat）、模块接口文档 |
 | 文档（戴儒骋） | `AGENT.md` 现有内容、功能说明书、`docs/kvstore.md` |
 
@@ -173,10 +174,20 @@ Prompt：
 - 超时 30s 返回 {"error":"AI 服务不可用"}
 ```
 
-### 4.4 卢恒毅 — 安全/测试/架构
+### 4.4 卢恒毅 — 后端架构/安全/测试/CI
 
 ```
-任务示例：新增 API 冒烟测试 case
+任务示例一（后端）：实现 HTTP 服务框架 / CI 流水线配置
+
+输入：AGENT.md + server/Makefile + server/include/http_server.h
+      + server/src/http_server.c + .github/workflows/ci.yml
+
+约束：
+- libmicrohttpd 守护进程，支持静态文件服务与 JSON API 路由分发
+- CI 流水线自动编译（make build）+ 全量回归测试（make test）
+- 分支保护规则同步 scripts/branch_protection.json
+
+任务示例二（测试）：新增 API 冒烟测试 case
 
 输入：AGENT.md + server/tests/run_tests.sh + 现有 case_*.sh
 
@@ -199,6 +210,22 @@ Prompt：
 - Bearer Token 存储在 localStorage
 - 未登录重定向到登录页
 - 后端内容插入 innerHTML 前必须 HTML 转义；不硬编码题目 id/数量
+```
+
+### 4.6 戴儒骋 — 文档/项目经理
+
+```
+任务示例：维护项目文档体系与进度跟踪
+
+输入：AGENT.md 现有内容 + @功能说明书 + docs/ 下已有文档
+      + docs/项目开发计划甘特图.xlsx（进度基准）
+
+约束：
+- 文档格式与现有 docs/ 风格一致，Markdown 优先
+- 引用的文件路径使用相对路径（如 docs/architecture.md）
+- 事实信息以 AGENT.md 和功能说明书为准，不编造
+- 跟踪各里程碑进度，同步更新甘特图与周报
+- 维护 docs/api.md 接口定义，与后端实现保持同步
 ```
 
 ---
