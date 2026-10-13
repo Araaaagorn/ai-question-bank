@@ -35,11 +35,18 @@
 
 ```
 ai-question-bank/
+├── .editorconfig / .gitattributes  # 编辑器与行尾配置
 ├── Makefile                    # 根构建入口（模块化分派）
 ├── README.md / CONTRIBUTING.md / LICENSE
+├── .github/
+│   ├── CODEOWNERS              # 模块审查人分配
+│   ├── PULL_REQUEST_TEMPLATE.md
+│   └── workflows/
+│       └── ci.yml              # CI：每次 push/PR 自动 build + test
 │
 ├── server/                     # C 后端（唯一业务入口）
 │   ├── Makefile                # lint / build / test / run / clean
+│   ├── .env.example            # 环境变量配置示例
 │   ├── include/                # 头文件
 │   │   ├── ai_client.h         # AI 代理接口（libcurl）
 │   │   ├── auth.h              # 认证鉴权接口
@@ -50,7 +57,7 @@ ai-question-bank/
 │   │   ├── kv_store.h          # 目录式键值存储接口
 │   │   └── routes.h            # 路由分发
 │   ├── src/                    # 源码
-│   │   ├── main.c              # 入口：加载配置 → db_init → 打开共享连接 → kv_init → seed → 启动 HTTP
+│   │   ├── main.c              # 入口：加载配置 → db_init → kv_init → seed → 启动 HTTP
 │   │   ├── config.c            # 环境变量读取（PORT/数据库/AI）
 │   │   ├── db.c                # SQLite 建表、demo 账号 seed、固定题目 seed（经 kv_store 写入）
 │   │   ├── http_server.c       # libmicrohttpd 守护进程
@@ -58,11 +65,14 @@ ai-question-bank/
 │   │   ├── ai_client.c         # AI API 代理调用（libcurl）
 │   │   ├── auth.c              # 认证鉴权实现
 │   │   └── kv_store.c          # 目录式键值存储实现（namespace → kv_{ns} 表）
-│   ├── third_party/            # cJSON（MIT 协议，单文件库）
-│   ├── tests/                  # 测试（run_tests.sh 自动发现测试组）
-│   │   ├── auth/ health/ questions/   # HTTP 接口回归（case_*.sh）
-│   │   └── kv/                 # kv_store 单元测试（case_unit.c，18 断言，不依赖 server 进程）
-│   └── .env.example            # 环境变量配置示例
+│   ├── third_party/            # cJSON（MIT 协议，单文件库：cJSON.c + cJSON.h）
+│   └── tests/                  # 测试（run_tests.sh 自动发现测试组）
+│       ├── run_tests.sh        # 测试入口：自动遍历 auth/health/questions/kv 四组
+│       ├── TEST.md             # 测试说明文档
+│       ├── auth/               # 认证接口回归（case_1~4.sh）
+│       ├── health/             # 健康检查回归（case_1.sh）
+│       ├── kv/                 # kv_store 单元测试（case_unit.c + case_unit.sh，18 断言）
+│       └── questions/          # 题目接口回归（case_1~5.sh）+ 辅助（check_api.py / db_test.c）
 │
 ├── web/                        # 静态前端（SPA，hash 路由）
 │   ├── index.html
@@ -86,12 +96,13 @@ ai-question-bank/
 │   └── 2026秋季软件工程课程实践说明20260910.pdf
 │
 ├── scripts/                    # 运维脚本
-│   ├── check_env.sh / check_env.ps1
-│   ├── install_env.sh
-│   └── githooks/ (commit-msg / pre-commit)
+│   ├── check_env.sh / check_env.ps1    # 环境检查
+│   ├── install_env.sh                  # 依赖安装
+│   ├── github_setup.sh / github_setup.ps1  # GitHub 仓库配置
+│   ├── branch_protection.json          # 分支保护规则
+│   └── githooks/               # Git hooks（commit-msg / pre-commit）
 │
-├── deploy/systemd/             # 生产部署配置
-└── .github/workflows/          # CI（每次 push/PR 自动 build + test）
+└── deploy/systemd/             # 生产部署配置（ai-question-bank.service）
 ```
 
 ---
