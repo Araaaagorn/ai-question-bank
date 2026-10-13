@@ -2,7 +2,7 @@
 
 > 版本：v1.2 | 日期：2026-10-13 | 维护：戴儒骋、卢恒毅
 > v1.1 变更：纳入 kv_store 存储层与前端三页等首轮实践成果；更新测试体系与投喂文件清单
-> v1.2 变更：修正第四节角色分工——补入戴儒骋（文档/项目经理），卢恒毅加入后端组并补后端任务示例
+> v1.2 变更：修正第四节角色分工——补入戴儒骋（文档/项目经理），卢恒毅加入后端组并补后端任务示例；认证模块归属修正（刘英哲已完成用户认证含注册，牛宇歌转向 P2 审核/通知）
 
 ---
 
@@ -125,23 +125,19 @@
 
 ## 四、各角色 AI 使用指南
 
-### 4.1 牛宇歌 — 后端认证模块
+### 4.1 牛宇歌 — 后端审核/通知模块
 
 ```
-任务示例：实现用户注册接口 POST /api/v1/auth/register
+任务示例：实现内容审核功能 / 通知中心
 
-输入：
-- docs/AGENT.md（项目规范）
-- server/Makefile（编译约束）
-- server/include/auth.h + routes.h（函数签名）
-- docs/api.md（接口定义）
-- server/src/auth.c（现有风格参考）
-- server/src/routes.c（路由注册方式）
+输入：AGENT.md + server/Makefile + server/include/*.h（现有头文件签名参考）
+      + docs/api.md（接口定义参考）
 
-Prompt：
-[粘贴约束块] → 请实现 handle_register()，
-接收 {"username","password","name","role":"student"}，
-校验字段完整性 → SHA-256 哈希 → 插入 users 表 → 返回 201 和用户信息。
+注意：
+- 认证模块已由刘英哲完成（auth.c/h，登录/注册/鉴权均已实现）
+- 牛宇歌转向 P2 任务：内容审核（敏感词过滤）、通知中心（系统通知推送）
+- 审核模块需兼容学生提交内容与 AI 生成内容的审核
+- 通知中心支持审核结果通知、额度告警等类型
 ```
 
 ### 4.2 李俊熠 — 后端题库模块
@@ -161,10 +157,12 @@ Prompt：
 - 后续支持分页 ?page=1&limit=20 与筛选 ?type=&difficulty=&tag=
 ```
 
-### 4.3 刘英哲 — 后端 AI 模块
+### 4.3 刘英哲 — 后端认证+AI 模块
 
 ```
-任务示例：实现 AI 解答调用 ai_client.c
+已完成：用户认证系统（auth.c/h，登录/注册/鉴权/Token/me 接口已实现，4 组回归测试）
+
+任务示例（AI 模块）：实现 AI 解答调用 ai_client.c
 
 输入：AGENT.md + server/Makefile + server/include/ai_client.h + config.h
 
