@@ -1,6 +1,7 @@
 # AI+题库智能教学平台 — AI 辅助开发计划
 
-> 版本：v1.0 | 日期：2026-10-10 | 维护：戴儒骋、卢恒毅
+> 版本：v1.1 | 日期：2026-10-13 | 维护：戴儒骋、卢恒毅
+> v1.1 变更：纳入 kv_store 存储层与前端三页等首轮实践成果；更新测试体系与投喂文件清单
 
 ---
 
@@ -16,6 +17,18 @@
 - 确保 AI 生成代码符合 C11 零警告、内存安全、API 统一等规范
 - CI 自动验证 AI 输出质量，人工审查仅聚焦架构与安全
 - 7 人团队中每人掌握 AI 辅助开发流程
+
+### 1.3 首轮实践成果（截至 2026-10-12）
+
+本计划的流程已在第一轮开发中完整跑通一次：
+
+| 成果 | 说明 |
+|------|------|
+| kv_store 目录式存储层 | PR #5 合入：namespace → SQLite 表 `kv_{ns}`，含 18 断言单元测试与 `docs/kvstore.md` 接口文档 |
+| 题目只读 API | `GET /api/v1/questions`（列表/详情），数据存 kv_store `qdata` namespace，5 道固定题 seed |
+| 前端三页 | 登录页 / 题目列表页 / 对话页（SPA hash 路由，在线 + file:// 离线双模式，35 项端到端断言） |
+
+流程复现：最小充分集投喂 → Prompt 模板约束 → AI 自查 → CI 编译与测试 → PR 人工审查 → 合入。
 
 ---
 
@@ -54,10 +67,10 @@
 
 | 角色 | 追加喂入 |
 |------|----------|
-| 后端（牛宇歌/李俊熠/刘英哲） | `docs/api.md` 接口定义、`docs/architecture.md`、`server/include/*.h` 头文件 |
-| 卢恒毅（安全/测试） | `.gitignore`、`server/.env.example`、现有冒烟测试 |
-| 前端（曹渲东/王英杰） | `web/index.html`、`web/css/style.css`、`web/js/app.js`、`docs/api.md` |
-| 文档（戴儒骋） | `AGENT.md` 现有内容、功能说明书 |
+| 后端（牛宇歌/李俊熠/刘英哲） | 模块接口文档（`docs/auth.md`/`docs/questions.md`）、`docs/kvstore.md`（涉及存储时必喂）、`docs/architecture.md`、`server/include/*.h` 头文件（含 `kv_store.h`） |
+| 卢恒毅（安全/测试） | `.gitignore`、`server/.env.example`、现有测试（`server/tests/*/case_*.sh`） |
+| 前端（曹渲东/王英杰） | `web/index.html`、`web/css/style.css`、`web/js/`（app/api/auth/questions/chat）、模块接口文档 |
+| 文档（戴儒骋） | `AGENT.md` 现有内容、功能说明书、`docs/kvstore.md` |
 
 ---
 
@@ -74,11 +87,11 @@
 输出必须满足：
 1. C11 标准，gcc -Wall -Wextra 编译零警告（注意 include 路径与 LDLIBS 匹配 server/Makefile）；
 2. HTTP 错误统一返回 JSON {"error":"..."}，状态码语义正确（401/403/404/500）；
-3. 动态内存必须 malloc/free 配对，禁止泄漏、越界、悬垂指针；
+3. 动态内存必须 malloc/free 配对，禁止泄漏、越界、悬垂指针；kv_* 返回的 char* 用 free()，char** 数组用 kv_free_str_array()；
 4. 禁止硬编码 API Key / 密码，敏感信息一律走环境变量（参考 server/.env.example）；
-5. 路由与数据结构签名与现有头文件（server/include/*.h）保持一致；
+5. 路由与数据结构签名与现有头文件（server/include/*.h）保持一致；存储选型按 AGENT.md：关系数据走 db.c，目录式数据走 kv_store（docs/kvstore.md）；
 6. 不破坏现有功能，新增路由不影响既有 /api/v1/health 与静态文件服务；
-7. 完成后，给出需要在 server/tests/ 中补充的冒烟测试用例。
+7. 完成后，给出需要在 server/tests/<组名>/ 中补充的测试用例。
 ```
 
 ### 3.2 前端代码生成模板
@@ -133,14 +146,18 @@ Prompt：
 ### 4.2 李俊熠 — 后端题库模块
 
 ```
-任务示例：实现题目列表接口 GET /api/v1/questions
+任务示例：实现题目写接口（创建/编辑/归档，POST/PUT/DELETE /api/v1/questions）
 
-输入：AGENT.md + server/Makefile + server/include/db.h + routes.h + docs/api.md
+输入：AGENT.md + server/Makefile + server/include/kv_store.h + routes.h
+      + docs/questions.md（现有只读契约）+ docs/kvstore.md
+
+现状（2026-10-12）：只读接口已上线——题目数据存 kv_store 的 qdata namespace
+（content/options/answer/analysis/type/knowledge_points/status），启动 seed 5 道固定题。
 
 注意：
+- 写接口沿用 kv_store 存储，保持与只读接口字段一致
 - 多租户隔离：所有查询以当前登录用户所属教师为 scope
-- 支持分页：?page=1&limit=20
-- 支持筛选：?type=单选&difficulty=3&tag=数学
+- 后续支持分页 ?page=1&limit=20 与筛选 ?type=&difficulty=&tag=
 ```
 
 ### 4.3 刘英哲 — 后端 AI 模块
@@ -172,14 +189,16 @@ Prompt：
 ### 4.5 曹渲东、王英杰 — 前端
 
 ```
-任务示例：实现题库列表页
+任务示例：实现题库列表页（已完成，见 web/js/questions.js）→ 下一步：试卷管理页
 
-输入：web/index.html + web/css/style.css + web/js/app.js + docs/api.md
+输入：web/index.html + web/css/style.css + web/js/（app/api/auth/questions/chat）
+      + docs/questions.md（接口契约）
 
 约束：
-- 纯静态页，fetch 调后端
+- 纯静态页，fetch 调后端，统一经 web/js/api.js（含 file:// 离线降级）
 - Bearer Token 存储在 localStorage
 - 未登录重定向到登录页
+- 后端内容插入 innerHTML 前必须 HTML 转义；不硬编码题目 id/数量
 ```
 
 ---
@@ -191,7 +210,7 @@ Prompt：
 | 检查项 | 工具 | 阈值 |
 |--------|------|------|
 | 编译 | `make build` | 零警告通过 |
-| 冒烟测试 | `make test` | 全部 case 通过 |
+| 接口回归 + 单元测试 | `make test`（run_tests.sh：auth/health/questions/kv） | 全部 case 通过 |
 | 代码行数 | git diff | PR < 500 行（推荐） |
 
 ### 5.2 AI 自查清单
@@ -205,7 +224,8 @@ Prompt：
 5. ☐ 是否有硬编码的密钥/密码？
 6. ☐ 新增源文件是否登记到 `server/Makefile` 的 SRCS？
 7. ☐ 新增路由是否不影响 `/api/v1/health`？
-8. ☐ 是否给出了补充冒烟测试用例？
+8. ☐ kv_* 返回的字符串是否全部释放（char** 用 kv_free_str_array）？namespace 命名是否合法（a-zA-Z0-9_，首字符非数字）？
+9. ☐ 是否给出了补充测试用例（server/tests/<组名>/）？
 
 ### 5.3 人工验证（PR Review）
 

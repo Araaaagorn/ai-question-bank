@@ -23,6 +23,7 @@
 | 模块 | 技术 | 说明 |
 |------|------|------|
 | 后端 | **C11** · libmicrohttpd · SQLite3 · libcurl · cJSON | HTTP 服务 + 存储 + AI 代理（API Key 不出后端） |
+| 存储层 | db.c（SQL 关系表）+ **kv_store**（目录式 KV） | users 等关系表走 SQL；题目等目录式数据走 kv_store，namespace 映射独立表 `kv_{ns}`（见 `kvstore.md`） |
 | 前端 | 纯 HTML / CSS / JS | 静态页面，由 C 服务端直接托管，无构建工具链 |
 | 构建 | GNU Make + gcc | `-std=c11 -Wall -Wextra`，零警告编译 |
 | 部署 | systemd（Linux 服务器） | 见 `environment-setup.md` |
@@ -42,34 +43,47 @@ ai-question-bank/
 │   ├── include/                # 头文件
 │   │   ├── ai_client.h         # AI 代理接口（libcurl）
 │   │   ├── auth.h              # 认证鉴权接口
-│   │   ├── config.h            # 环境变量配置
+│   │   ├── config.h            # 环境变量配置（含共享 sqlite3 连接）
 │   │   ├── db.h                # SQLite 数据库接口
+│   │   ├── debug.h             # 调试日志宏（编译时 -DDEBUG 开关，零开销）
 │   │   ├── http_server.h       # HTTP 守护进程
+│   │   ├── kv_store.h          # 目录式键值存储接口
 │   │   └── routes.h            # 路由分发
 │   ├── src/                    # 源码
-│   │   ├── main.c              # 入口：加载配置 → 初始化 DB → 启动 HTTP
+│   │   ├── main.c              # 入口：加载配置 → db_init → 打开共享连接 → kv_init → seed → 启动 HTTP
 │   │   ├── config.c            # 环境变量读取（PORT/数据库/AI）
-│   │   ├── db.c                # SQLite 初始化与建表
+│   │   ├── db.c                # SQLite 建表、demo 账号 seed、固定题目 seed（经 kv_store 写入）
 │   │   ├── http_server.c       # libmicrohttpd 守护进程
 │   │   ├── routes.c            # /api/v1/* JSON API + 静态文件服务
 │   │   ├── ai_client.c         # AI API 代理调用（libcurl）
-│   │   └── auth.c              # 认证鉴权实现
+│   │   ├── auth.c              # 认证鉴权实现
+│   │   └── kv_store.c          # 目录式键值存储实现（namespace → kv_{ns} 表）
 │   ├── third_party/            # cJSON（MIT 协议，单文件库）
-│   ├── tests/                  # 冒烟测试脚本
+│   ├── tests/                  # 测试（run_tests.sh 自动发现测试组）
+│   │   ├── auth/ health/ questions/   # HTTP 接口回归（case_*.sh）
+│   │   └── kv/                 # kv_store 单元测试（case_unit.c，18 断言，不依赖 server 进程）
 │   └── .env.example            # 环境变量配置示例
 │
-├── web/                        # 静态前端
+├── web/                        # 静态前端（SPA，hash 路由）
 │   ├── index.html
 │   ├── css/style.css
-│   └── js/app.js
+│   └── js/
+│       ├── app.js              # 页面骨架与路由切换
+│       ├── api.js              # API 客户端（在线模式 + file:// 离线演示降级）
+│       ├── auth.js             # 登录页
+│       ├── questions.js        # 题目列表页
+│       └── chat.js             # 对话页（题目详情 + AI 对话）
 │
 ├── docs/                       # 项目文档
 │   ├── AGENT.md                # 本文件
-│   ├── AI协作指南.md            # 团队协作流程
+│   ├── AI协作指南.md / AI辅助开发计划.md
 │   ├── AI题库项目整体预期功能说明书.md
-│   ├── architecture.md         # 架构说明
-│   ├── auth.md                 # 认证设计
-│   └── environment-setup.md    # 环境部署指南
+│   ├── architecture.md / auth.md / environment-setup.md
+│   ├── kvstore.md              # kv_store 存储层接口文档（涉及存储时必读）
+│   ├── questions.md            # 题目模块契约（数据初始化/接口/测试）
+│   ├── 软件需求说明书.md / 软件项目开发计划.md / 项目开发时间轴.md
+│   ├── 项目开发计划甘特图.xlsx / 系统UI设计稿.pptx
+│   └── 2026秋季软件工程课程实践说明20260910.pdf
 │
 ├── scripts/                    # 运维脚本
 │   ├── check_env.sh / check_env.ps1
@@ -93,8 +107,12 @@ sudo bash scripts/install_env.sh   # gcc make libmicrohttpd-dev libcurl4-openssl
 
 # 构建
 make build          # 编译 server/
-make test           # 冒烟测试（启动服务 → 健康检查 → 静态页 → 关闭）
+make test           # 测试（run_tests.sh 自动发现 auth/health/questions/kv 测试组）
 make lint           # 静态检查
+
+# 单独运行某一测试组
+bash server/tests/run_tests.sh kv         # 仅 kv_store 单元测试
+bash server/tests/run_tests.sh questions  # 仅题目接口回归
 
 # 运行（开发模式）
 make -C server run  # 启动 http://localhost:8000
@@ -151,6 +169,7 @@ gcc -std=c11 -Wall -Wextra  → 零警告
 - 禁止越界访问、悬垂指针（use-after-free / double-free）
 - 函数返回指针时必须明确其生命周期（调用方释放 or 内部静态）
 - 字符串操作优先 `snprintf` / `strncpy`，禁止裸 `sprintf` / `strcpy`
+- **kv_store 所有权**：`kv_get` / `kv_get_all` 返回的 `char*` 由调用者 `free()`；`kv_list_*` 返回的 `char**` 数组必须用 `kv_free_str_array()` 释放
 
 ### 5.4 错误处理
 
@@ -175,14 +194,18 @@ gcc -std=c11 -Wall -Wextra  → 零警告
 ### 6.1 分层原则
 
 ```
-路由层（routes.c）  →  只做分发与参数处理
-业务层（services_*.c）→ 业务规则
-数据层（db.c）      → SQLite 读写
-AI 层（ai_client.c）→ 大模型代理调用
+路由层（routes.c）    →  只做分发与参数处理
+业务层（services_*.c）→  业务规则
+数据层（db.c）        →  关系型数据 SQL 读写（users 表等）
+存储层（kv_store.c）  →  目录式键值数据（namespace / key / value_name / value）
+AI 层（ai_client.c）  →  大模型代理调用
 ```
 
-- 路由层不直接操作数据库，通过 db.h/c 接口
+- 路由层不直接拼接 SQL，通过 db.h/c 或 kv_store.h 接口
 - 业务规则放独立模块，不散落在路由处理函数中
+- **存储选型**：强关系数据（用户等）走 db.c 关系表；目录式/弱 schema 数据（题目等）走 kv_store，接口见 `docs/kvstore.md`
+- **共享数据库连接**：`AppConfig.db` 在 main.c 打开一次，kv_store 与路由层复用同一 `sqlite3*`，禁止各自另开连接
+- **namespace 命名**：仅允许 `a-zA-Z0-9_` 且首字符非数字，否则 kv_* 返回 -1
 
 ### 6.2 安全红线
 
@@ -196,7 +219,8 @@ AI 层（ai_client.c）→ 大模型代理调用
 ### 6.3 并发预留
 
 - 保持「无共享可变状态」（no shared mutable state）
-- 路由处理函数应为无副作用的纯函数，状态通过 db 持久化
+- 路由处理函数应为无副作用的纯函数，状态通过 db / kv_store 持久化
+- kv_store **未加锁**：当前单线程 demo 模式安全；若引入工作线程共享同一 `sqlite3*`，调用方必须自行串行化
 - 考虑后续引入工作线程时的数据竞争风险
 
 ---
@@ -206,12 +230,13 @@ AI 层（ai_client.c）→ 大模型代理调用
 ### 7.1 URL 约定
 
 ```
-/api/v1/health        → 健康检查（GET，无需认证）
-/api/v1/auth/*         → 认证相关
-/api/v1/questions/*    → 题库相关
-/api/v1/exams/*        → 试卷相关
+/api/v1/health          → 健康检查（GET，无需认证）【已实现】
+/api/v1/auth/*          → 认证相关（login/logout/me）【已实现】
+/api/v1/questions       → 题目列表/详情（GET，只读）【已实现】
+/api/v1/chat            → AI 对话（规划中；前端已预留降级演示数据）
+/api/v1/exams/*         → 试卷相关（规划中）
 /api/v1/conversations/* → 对话树相关
-/api/v1/admin/*        → 管理功能
+/api/v1/admin/*        → 管理功能（规划中）
 ```
 
 ### 7.2 请求/响应格式
@@ -223,7 +248,7 @@ AI 层（ai_client.c）→ 大模型代理调用
 
 ### 7.3 API 文档
 
-详见 `docs/api.md`（由戴儒骋维护），后端开发必须严格按 api.md 的接口签名实现。
+统一 `docs/api.md` 尚在整合中；当前接口契约以模块文档为准：`docs/auth.md`（认证）、`docs/questions.md`（题目）、`docs/kvstore.md`（存储层）。后端开发必须严格按对应模块文档的接口签名实现，新接口先落模块文档再写代码。
 
 ---
 
@@ -240,8 +265,8 @@ AI 层（ai_client.c）→ 大模型代理调用
 
 1. 在 `server/src/routes.c` 的 URL 派遣函数中添加新路径匹配
 2. 如需新业务模块，创建 `server/src/services_xxx.c`
-3. 在 `server/tests/run_smoke.sh` 中添加冒烟测试用例
-4. 更新 `docs/api.md` 对应接口定义
+3. 在 `server/tests/<组名>/` 下新增 `case_N.sh`（run_tests.sh 自动发现）；需要编译的 C 测试在 `run_tests.sh` 中登记
+4. 更新对应模块文档（questions.md / auth.md 等）的接口定义，统一 api.md 整合后迁移
 
 ### 8.3 新增模块/语言（monorepo 扩展）
 
@@ -255,10 +280,15 @@ AI 层（ai_client.c）→ 大模型代理调用
 
 ## 9. 测试
 
-### 9.1 冒烟测试
+### 9.1 测试体系（run_tests.sh）
 
-- 脚本：`server/tests/run_smoke.sh`
-- 覆盖：健康检查 → 静态页 → 登录 → 题目操作 → 对话 → 关闭
+- 运行器：`server/tests/run_tests.sh`，自动发现测试组并管理服务生命周期（启动 → 跑用例 → 关闭），默认使用独立临时数据库
+- 测试组：
+  - `auth/`：登录成功/失败、token 校验、登出（case_1~4.sh）
+  - `health/`：健康检查（case_1.sh）
+  - `questions/`：题目列表/详情、401/404/405/500、旧库迁移（case_1~5.sh + check_api.py + db_test.c）
+  - `kv/`：kv_store 单元测试（case_unit.c，18 断言，不依赖 server 进程）
+- 单独运行：`bash server/tests/run_tests.sh kv`（或 questions / auth / health）
 - CI 必须全绿，否则分支保护不允许合并
 
 ### 9.2 测试风格
@@ -289,6 +319,9 @@ echo "PASS: health"
 | CI 检查名与分支保护不一致 | 配置不同步 | `gh pr checks <PR号>` 查看后更新 `scripts/branch_protection.json` |
 | Windows 无法编译 | gcc 版本过旧 | 以 CI 编译结果为准；或装 WSL2 |
 | `make test` 失败但服务正常 | 端口冲突/服务未完全启动 | 冒烟脚本中增加 `sleep 1` |
+| kv_* 返回 -1（无效参数） | namespace 命名不合法 | namespace 仅允许 `a-zA-Z0-9_`，首字符非数字 |
+| kv_* 返回的内存泄漏 | 忘记释放 | `char*` 直接 `free()`；`char**` 数组用 `kv_free_str_array()` |
+| 题目数据不在 questions 表 | 题目已改存 kv_store | 查 `qdata` namespace（`kv_get` / `kv_list_keys`），见 `docs/kvstore.md` |
 
 ---
 
@@ -312,12 +345,16 @@ main（受保护） ← PR（Squash merge） ← feat/fix/docs/... 分支
 | 角色 | 成员 | 负责模块 |
 |------|------|----------|
 | 后端-认证 | 牛宇歌 | `auth.c/h`, 登录/注册/鉴权 |
-| 后端-题库 | 李俊熠 | 题目 CRUD 路由, `db.c` 扩展 |
+| 后端-题库 | 李俊熠 | 题目 CRUD 路由（只读接口已接入 kv_store）, `db.c` 扩展 |
 | 后端-AI | 刘英哲 | `ai_client.c/h`, 对话树 |
-| 后端-安全/测试/架构 | 卢恒毅 | 代码审查、冒烟测试、CI、安全审计 |
+| 后端-安全/测试/架构 | 卢恒毅 | 代码审查、测试体系、CI、安全审计 |
 | 前端 | 曹渲东、王英杰 | `web/` 全部 |
 | 文档/接口 | 戴儒骋 | `AGENT.md`、`api.md`、功能说明书 |
 
 ---
 
-> **AI Agent 使用提醒**：生成代码前，请完整阅读本文件 + `server/Makefile` + 相关头文件（`server/include/*.h`），确保输出满足 C11 零警告、内存安全、API 签名一致、安全红线不触碰。
+> kv_store 公共存储层（`kv_store.c/h` + `debug.h`，经 PR #5 合入）是后端各模块共用基础设施，接口文档见 `docs/kvstore.md`。
+
+---
+
+> **AI Agent 使用提醒**：生成代码前，请完整阅读本文件 + `server/Makefile` + 相关头文件（`server/include/*.h`）；涉及数据存储时必读 `docs/kvstore.md`。确保输出满足 C11 零警告、内存安全（含 kv_* 返回值释放）、API 签名一致、安全红线不触碰。
