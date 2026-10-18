@@ -579,6 +579,83 @@ static const char *get_base_dir(void) {
     return g_base_dir ? g_base_dir : ".";
 }
 
+/**
+ * @brief 就地规范化路径：消除 . 、.. 和连续斜杠。
+ *        不访问文件系统，纯字符串处理。
+ *        不处理符号链接（符号链接穿越由 open() 的 O_NOFOLLOW 可选防护）。
+ * @param path  输入路径字符串，就地修改。
+ *              若 .. 数量超出根（如 "/a/../../x"），返回空串。
+ * @return const char*  指向规范化后的字符串（path 本身）。
+ *                      若路径非法或结果为空，返回 ""。
+ */
+static const char *normalize_path(char *path) {
+    if (path == NULL || path[0] == '\0') return "";
+
+    /* 记录是否以 '/' 开头（绝对路径） */
+    int is_absolute = (path[0] == '/');
+
+    /* 按 '/' 拆分，用栈思想处理 */
+    char *stack[256];  /* 最多 256 级深度 */
+    int depth = 0;
+
+    char *saveptr;
+    char *token = strtok_r(path, "/", &saveptr);
+    while (token != NULL) {
+        if (strcmp(token, ".") == 0 || token[0] == '\0') {
+            /* 跳过 '.' 和空串 */
+        } else if (strcmp(token, "..") == 0) {
+            if (depth > 0) {
+                depth--;
+            } else if (!is_absolute) {
+                /* 相对路径，.. 可以超越起点：保留 */
+                if (depth >= 255) return "";
+                stack[depth++] = token;
+            }
+            /* 绝对路径的 /.. 被忽略（已到根） */
+        } else {
+            if (depth >= 255) return "";
+            stack[depth++] = token;
+        }
+        token = strtok_r(NULL, "/", &saveptr);
+    }
+
+    /* 重建路径 */
+    if (is_absolute && depth == 0) {
+        path[0] = '/';
+        path[1] = '\0';
+        return path;
+    }
+    if (!is_absolute && depth == 0) {
+        path[0] = '.';
+        path[1] = '\0';
+        return path;
+    }
+
+    char *dst = path;
+    for (int i = 0; i < depth; i++) {
+        if (i > 0 || is_absolute) *dst++ = '/';
+        size_t len = strlen(stack[i]);
+        memmove(dst, stack[i], len);
+        dst += len;
+    }
+    *dst = '\0';
+    return path;
+}
+
+/**
+ * @brief 检查规范化后的路径是否在 base_dir 子树内。
+ * @param normalized  已规范化的路径（经过 normalize_path()）。
+ * @param base        基址目录（已剥离尾部斜杠）。
+ * @return int  1 在子树内（安全）；0 穿越（拒绝）。
+ */
+static int path_is_under(const char *normalized, const char *base) {
+    size_t base_len = strlen(base);
+    /* 规范化后的路径必须以 base 开头，且紧跟着 '/' 或 '\0' */
+    if (strncmp(normalized, base, base_len) != 0) return 0;
+    char next = normalized[base_len];
+    return (next == '/' || next == '\0');
+}
+
 int kv_file_open(sqlite3 *db,
                  const char *namespace,
                  const char *key,
@@ -600,7 +677,7 @@ int kv_file_open(sqlite3 *db,
         return -1;
     }
 
-    /* 2. 路径解析：绝对路径直接用，相对路径拼接 base_dir */
+    /* 2. 路径解析：绝对路径直接使用，相对路径规范化后校验子树 */
     const char *final_path = path;
     char *resolved = NULL;
 
@@ -614,17 +691,24 @@ int kv_file_open(sqlite3 *db,
             return -1;
         }
         snprintf(resolved, needed, "%s/%s", base, path);
-        /* 规范化：去掉连续斜杠 */
-        char *src = resolved;
-        char *dst = resolved;
-        while (*src) {
-            if (*src == '/' && *(src + 1) == '/') {
-                src++;
-            } else {
-                *dst++ = *src++;
-            }
+
+        /* 规范化路径（消除 . 和 ..） */
+        if (normalize_path(resolved)[0] == '\0') {
+            free(path);
+            free(resolved);
+            errno = EINVAL;
+            return -1;
         }
-        *dst = '\0';
+
+        /* 路径穿越检测：规范化后的路径必须在 base_dir 子树内 */
+        if (!path_is_under(resolved, base)) {
+            fprintf(stderr, "✘ kv_file_open: 路径穿越被拒绝: '%s' 不在 '%s' 内\n",
+                    resolved, base);
+            free(path);
+            free(resolved);
+            errno = EACCES;
+            return -1;
+        }
         final_path = resolved;
     }
 

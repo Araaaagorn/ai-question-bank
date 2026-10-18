@@ -497,6 +497,38 @@ static void test_file_base_dir_default(sqlite3 *db) {
     unlink(fpath);
     PASS();
 }
+
+static void test_file_traversal_rejected(sqlite3 *db) {
+    TEST("路径穿越被拒绝 (../etc/passwd → EACCES)");
+    kv_set_base_dir("/tmp/kv_sandbox");
+    /* 确保沙箱目录存在 */
+    system("mkdir -p /tmp/kv_sandbox/sub 2>/dev/null");
+
+    kv_set(db, "files", "evil", "path", "../etc/passwd");
+    int fd = kv_file_open(db, "files", "evil", "path", O_RDONLY, 0);
+    ASSERT_TRUE(fd == -1, "穿越路径应返回 -1");
+    ASSERT_TRUE(errno == EACCES, "errno 应为 EACCES");
+
+    /* 多层穿越 */
+    kv_set(db, "files", "evil2", "path", "sub/../../etc/shadow");
+    fd = kv_file_open(db, "files", "evil2", "path", O_RDONLY, 0);
+    ASSERT_TRUE(fd == -1, "多层穿越应返回 -1");
+    ASSERT_TRUE(errno == EACCES, "errno 应为 EACCES");
+
+    /* 合法子目录路径应正常 */
+    kv_set(db, "files", "ok", "path", "sub/../sub/ok.txt");
+    system("echo 'ok' > /tmp/kv_sandbox/sub/ok.txt");
+    fd = kv_file_open(db, "files", "ok", "path", O_RDONLY, 0);
+    ASSERT_TRUE(fd >= 0, "合法路径应成功");
+    char buf[8] = {0};
+    read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    ASSERT_TRUE(strcmp(buf, "ok\n") == 0, "内容应匹配");
+
+    kv_set_base_dir(NULL);
+    system("rm -rf /tmp/kv_sandbox 2>/dev/null");
+    PASS();
+}
 #if 0
 static void test_str_to_double(sqlite3 *db) {
     (void)db;
@@ -604,6 +636,7 @@ int main(void) {
     test_file_base_dir_slash_strip(db);
     test_file_write_create(db);
     test_file_base_dir_default(db);
+    test_file_traversal_rejected(db);
 /*
     test_str_to_double(db);
     test_str_array_to_int(db);
