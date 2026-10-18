@@ -6,6 +6,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <errno.h>
+#include <unistd.h>
+
 #include <sqlite3.h>
 
 #include "cJSON.h"
@@ -554,6 +557,89 @@ void kv_free_str_array(char **arr) {
     free(arr);
 }
 
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * 大文件存取扩展
+ * ═══════════════════════════════════════════════════════════════════════════ */
+/* 模块级基址目录；默认 "."，通过 kv_set_base_dir 修改 */
+static char *g_base_dir = NULL;
+
+void kv_set_base_dir(const char *base_dir) {
+    free(g_base_dir);
+    g_base_dir = NULL;
+    if (base_dir != NULL) {
+        /* 去掉尾部多余的 '/' */
+        size_t len = strlen(base_dir);
+        while (len > 0 && base_dir[len - 1] == '/') len--;
+        g_base_dir = strndup(base_dir, len);
+    }
+}
+
+static const char *get_base_dir(void) {
+    return g_base_dir ? g_base_dir : ".";
+}
+
+int kv_file_open(sqlite3 *db,
+                 const char *namespace,
+                 const char *key,
+                 const char *value_name,
+                 int flags,
+                 mode_t mode) {
+    if (db == NULL || namespace == NULL || key == NULL || value_name == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    /* 1. 从 kv 读取文件路径 */
+    char *path = kv_get(db, namespace, key, value_name);
+    if (path == NULL) {
+        /* 未找到值：区分"不存在"和"出错"。
+         * kv_get 出错也返回 NULL，这里统一按不存在处理；
+         * 若需精确诊断，可检查 kv_get 内部日志。 */
+        errno = ENOENT;
+        return -1;
+    }
+
+    /* 2. 路径解析：绝对路径直接用，相对路径拼接 base_dir */
+    const char *final_path = path;
+    char *resolved = NULL;
+
+    if (path[0] != '/') {
+        const char *base = get_base_dir();
+        size_t needed = strlen(base) + 1 + strlen(path) + 1;
+        resolved = malloc(needed);
+        if (resolved == NULL) {
+            free(path);
+            errno = ENOMEM;
+            return -1;
+        }
+        snprintf(resolved, needed, "%s/%s", base, path);
+        /* 规范化：去掉连续斜杠 */
+        char *src = resolved;
+        char *dst = resolved;
+        while (*src) {
+            if (*src == '/' && *(src + 1) == '/') {
+                src++;
+            } else {
+                *dst++ = *src++;
+            }
+        }
+        *dst = '\0';
+        final_path = resolved;
+    }
+
+    /* 3. 打开文件 */
+    int fd = open(final_path, flags, mode);
+
+    /* 4. 清理并返回 */
+    free(path);
+    free(resolved);
+    return fd;
+}
+
+
+
+
 /* ═══════════════════════════════════════════════════════════════════════════
  * 类型转换工具
  * ═══════════════════════════════════════════════════════════════════════════ */
@@ -572,6 +658,7 @@ int kv_str_to_int(const char *str, int *out) {
  * 以下类型转换函数当前未被任何调用方使用（死代码），保留注释以供参考。
  * 如需启用，取消注释并在 kv_store.h 中恢复对应的声明。
  * ═══════════════════════════════════════════════════════════════════════════ */
+
 #if 0
 int kv_str_to_double(const char *str, double *out) {
     if (str == NULL || out == NULL) return -1;
