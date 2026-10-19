@@ -414,8 +414,21 @@ static void test_file_not_found(sqlite3 *db) {
 
 static void test_file_null_params(sqlite3 *db) {
     TEST("kv_file_open NULL 参数返回 -1 (EINVAL)");
-    int fd = kv_file_open(db, NULL, "k", "vn", O_RDONLY, 0);
+
+    int fd = kv_file_open(NULL, "ns", "k", "vn", O_RDONLY, 0);
+    ASSERT_TRUE(fd == -1, "NULL db 应返回 -1");
+    ASSERT_TRUE(errno == EINVAL, "errno 应为 EINVAL");
+
+    fd = kv_file_open(db, NULL, "k", "vn", O_RDONLY, 0);
     ASSERT_TRUE(fd == -1, "NULL namespace 应返回 -1");
+    ASSERT_TRUE(errno == EINVAL, "errno 应为 EINVAL");
+
+    fd = kv_file_open(db, "ns", NULL, "vn", O_RDONLY, 0);
+    ASSERT_TRUE(fd == -1, "NULL key 应返回 -1");
+    ASSERT_TRUE(errno == EINVAL, "errno 应为 EINVAL");
+
+    fd = kv_file_open(db, "ns", "k", NULL, O_RDONLY, 0);
+    ASSERT_TRUE(fd == -1, "NULL value_name 应返回 -1");
     ASSERT_TRUE(errno == EINVAL, "errno 应为 EINVAL");
     PASS();
 }

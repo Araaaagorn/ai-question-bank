@@ -571,7 +571,12 @@ void kv_set_base_dir(const char *base_dir) {
         /* 去掉尾部多余的 '/' */
         size_t len = strlen(base_dir);
         while (len > 0 && base_dir[len - 1] == '/') len--;
-        g_base_dir = strndup(base_dir, len);
+        if (len == 0 && base_dir[0] == '/') {
+            /* 根目录："/" 或 "///" → "/" */
+            g_base_dir = strdup("/");
+        } else {
+            g_base_dir = strndup(base_dir, len);
+        }
     }
 }
 
@@ -650,6 +655,8 @@ static const char *normalize_path(char *path) {
  */
 static int path_is_under(const char *normalized, const char *base) {
     size_t base_len = strlen(base);
+    /* 根目录：所有以 '/' 开头的路径均在 / 下 */
+    if (base_len == 1 && base[0] == '/') return (normalized[0] == '/');
     /* 规范化后的路径必须以 base 开头，且紧跟着 '/' 或 '\0' */
     if (strncmp(normalized, base, base_len) != 0) return 0;
     char next = normalized[base_len];
