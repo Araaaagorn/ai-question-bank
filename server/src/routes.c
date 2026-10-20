@@ -743,6 +743,20 @@ static enum MHD_Result handle_question_update(struct MHD_Connection *conn,
             cJSON_AddItemToObject(merged, editable[i], cJSON_Duplicate(item, 1));
         }
     }
+    /* 请求体必须包含至少一个可更新字段（空对象视为非法） */
+    int has_field = 0;
+    for (size_t i = 0; i < sizeof(editable) / sizeof(editable[0]); i++) {
+        if (cJSON_GetObjectItem(root, editable[i]) != NULL) {
+            has_field = 1;
+            break;
+        }
+    }
+    if (!has_field) {
+        cJSON_Delete(root);
+        cJSON_Delete(merged);
+        return reply_error(conn, MHD_HTTP_BAD_REQUEST,
+                           "请求体未包含任何可更新字段");
+    }
     cJSON_Delete(root);
 
     /* 用合并后的完整负载做统一校验，保证 answer/options/type 一致 */

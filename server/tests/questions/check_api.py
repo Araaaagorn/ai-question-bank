@@ -154,6 +154,7 @@ elif mode == "create":
         "type": "short_answer",
         "options": [],
         "answer": "惯性定律",
+        "analysis": "物体在不受外力时保持静止或匀速直线运动。",
         "knowledge_points": ["力学"],
     })
     assert short["type"] == "short_answer"
