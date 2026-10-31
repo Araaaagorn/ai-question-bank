@@ -33,6 +33,9 @@ function route() {
   } else if (hash.startsWith('#chat/')) {
     const id = hash.split('/')[1];
     ChatPage.show(id);
+  } else if (hash.startsWith('#question-form/')) {
+    const id = hash.split('/').slice(1).join('/');
+    QuestionFormPage.show(id);
   } else {
     navigate('#questions');
   }

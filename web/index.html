@@ -49,6 +49,47 @@
     </div>
   </div>
 
+  <!-- ====== 题目表单页 ====== -->
+  <div id="page-question-form" class="page hidden">
+    <div class="container">
+      <h2 id="questionFormTitle">新增题目</h2>
+      <div id="questionFormError" class="error-box hidden"></div>
+      <form id="questionForm" onsubmit="return false">
+        <input type="hidden" id="questionId" />
+        <div class="form-group">
+          <label for="qContent">题干</label>
+          <textarea id="qContent" rows="4" required></textarea>
+        </div>
+        <div class="form-group">
+          <label>题型</label>
+          <label class="radio-label"><input type="radio" name="qType" value="single_choice" checked /> 选择题</label>
+          <label class="radio-label"><input type="radio" name="qType" value="short_answer" /> 简答题</label>
+        </div>
+        <div class="form-group" id="qOptionsSection">
+          <label>选项</label>
+          <div id="qOptionsContainer"></div>
+          <button type="button" class="btn btn-sm btn-secondary" onclick="QuestionFormPage.addOption('', '')">+ 添加选项</button>
+        </div>
+        <div class="form-group">
+          <label for="qAnswer">答案</label>
+          <input type="text" id="qAnswer" placeholder="选择题填选项 label（如 A），简答题填文本" required />
+        </div>
+        <div class="form-group">
+          <label for="qAnalysis">解析</label>
+          <textarea id="qAnalysis" rows="3"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="qKnowledge">知识点（用逗号分隔）</label>
+          <input type="text" id="qKnowledge" placeholder="例如：一元一次方程, 等式性质" />
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-primary" id="questionSaveBtn">保 存</button>
+          <button type="button" class="btn btn-secondary" id="questionCancelBtn">取 消</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <!-- ====== 对话页 ====== -->
   <div id="page-chat" class="page hidden">
     <div class="container chat-layout">
@@ -90,6 +131,7 @@
   <script src="/js/auth.js"></script>
   <script src="/js/utils.js"></script>
   <script src="/js/questions.js"></script>
+  <script src="/js/question-form.js"></script>
   <script src="/js/chat.js"></script>
   <script src="/js/app.js"></script>
 </body>
