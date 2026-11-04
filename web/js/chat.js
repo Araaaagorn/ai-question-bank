@@ -125,6 +125,10 @@ const ChatPage = (() => {
   }
 
   async function loadQuestionDetail(id) {
+    /* 重试时先复位到加载态 */
+    $('detailError').classList.add('hidden');
+    $('detailContent').classList.add('hidden');
+    $('detailLoading').classList.remove('hidden');
     try {
       const data = await API.questionDetail(id);
       const q = data.question;
@@ -132,7 +136,7 @@ const ChatPage = (() => {
       $('chatQuestionTitle').textContent = '题目 #' + q.id;
     } catch (e) {
       $('detailLoading').classList.add('hidden');
-      $('detailError').textContent = '加载题目失败：' + (e.message || '未知错误');
+      $('detailErrorText').textContent = '加载题目失败：' + (e.message || '未知错误');
       $('detailError').classList.remove('hidden');
     }
   }
@@ -150,7 +154,7 @@ const ChatPage = (() => {
         `<div class="q-opt-item"><span class="q-opt-label">${escapeHtml(opt.label)}.</span>${escapeHtml(opt.text)}</div>`
       ).join('');
     } else {
-      optsEl.innerHTML = '<p style="color:#999;font-size:13px;">（本题为简答/填空类型，无选项）</p>';
+      optsEl.innerHTML = '<p class="q-opt-empty">（本题为简答/填空类型，无选项）</p>';
     }
 
     // 类型标签
@@ -322,7 +326,13 @@ const ChatPage = (() => {
     if (el) el.remove();
   }
 
-  return { show, sendMessage, cancel, onModeChange };
+  return {
+    show,
+    sendMessage,
+    cancel,
+    onModeChange,
+    retryDetail: () => loadQuestionDetail(currentQuestionId)
+  };
 })();
 
 /* 模式切换事件 */

@@ -14,12 +14,16 @@ const QuestionsPage = (() => {
   }
 
   async function loadQuestions() {
+    /* 重试时先复位：隐藏错误、清空旧列表、显示加载态 */
+    $('questionsError').classList.add('hidden');
+    $('questionsList').innerHTML = '';
+    $('questionsLoading').classList.remove('hidden');
     try {
       const data = await API.questions();    // { questions: [...] }
       renderQuestions(data.questions || []);
     } catch (e) {
       $('questionsLoading').classList.add('hidden');
-      $('questionsError').textContent = '加载失败：' + (e.message || '未知错误');
+      $('questionsErrorText').textContent = '加载失败：' + (e.message || '未知错误');
       $('questionsError').classList.remove('hidden');
     }
   }
@@ -28,7 +32,7 @@ const QuestionsPage = (() => {
     $('questionsLoading').classList.add('hidden');
     const list = $('questionsList');
     if (questions.length === 0) {
-      list.innerHTML = '<p style="text-align:center;color:#999;">暂无题目</p>';
+      list.innerHTML = '<p class="empty-state">暂无题目</p>';
       return;
     }
     list.innerHTML = questions.map(q => {
@@ -49,5 +53,5 @@ const QuestionsPage = (() => {
     }).join('');
   }
 
-  return { show };
+  return { show, reload: loadQuestions };
 })();

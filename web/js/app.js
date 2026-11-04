@@ -72,6 +72,14 @@ window.app = {
     ChatPage.cancel();
   },
 
+  reloadQuestions() {
+    QuestionsPage.reload();
+  },
+
+  retryDetail() {
+    ChatPage.retryDetail();
+  },
+
   navigate
 };
 

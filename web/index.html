@@ -80,7 +80,10 @@
     <div class="container">
       <h2>题目列表</h2>
       <div id="questionsLoading" class="loading">加载中...</div>
-      <div id="questionsError" class="error-box hidden"></div>
+      <div id="questionsError" class="error-box hidden">
+        <span id="questionsErrorText"></span>
+        <button class="btn btn-sm btn-secondary" onclick="app.reloadQuestions()">重试</button>
+      </div>
       <div id="questionsList" class="questions-list"></div>
     </div>
   </div>
@@ -96,7 +99,10 @@
       <!-- 题目详情区 -->
       <div id="questionDetail" class="question-detail">
         <div id="detailLoading" class="loading">加载题目中...</div>
-        <div id="detailError" class="error-box hidden"></div>
+        <div id="detailError" class="error-box hidden">
+          <span id="detailErrorText"></span>
+          <button class="btn btn-sm btn-secondary" onclick="app.retryDetail()">重试</button>
+        </div>
         <div id="detailContent" class="hidden">
           <p class="q-content" id="qContent"></p>
           <div id="qOptions" class="q-options"></div>
