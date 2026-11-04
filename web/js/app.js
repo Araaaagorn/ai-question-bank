@@ -10,6 +10,13 @@ function navigate(hash) {
 function route() {
   const hash = window.location.hash || '#login';
 
+  /* 注册页只在 #register 下显示，其余路由统一隐藏 */
+  $('page-register').classList.add('hidden');
+  if (hash === '#register') {
+    RegisterPage.show();
+    return;
+  }
+
   // 检查是否已登录
   const token = API.getToken();
 
@@ -42,6 +49,10 @@ function route() {
 window.app = {
   login(e) {
     return AuthPage.handleLogin(e);
+  },
+
+  register(e) {
+    return RegisterPage.handleRegister(e);
   },
 
   logout() {
