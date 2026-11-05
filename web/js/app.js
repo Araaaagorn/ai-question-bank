@@ -61,6 +61,8 @@ window.app = {
       console.warn('[APP] 登出请求失败：', err);
     });
     API.clearAuth();
+    /* 切换用户必须清空会话映射，避免复用上一个用户的 conversation_id */
+    ChatPage.resetConversations();
     navigate('#login');
   },
 
