@@ -275,6 +275,48 @@ const API = (() => {
     });
   }
 
+  /* 离线注册：校验规则与 docs/auth.md 2.1 的 400/409 契约保持一致。
+   * 注册成功写回 MOCK_USERS，保证离线模式下新账号可以立即登录。 */
+  function mockRegister(payload) {
+    return delay(400).then(() => {
+      const username = String(payload.username || '').trim();
+      const password = String(payload.password || '');
+      const confirm = String(payload.confirm_password || '');
+      const role = String(payload.role || 'student');
+
+      if (!username) {
+        throw new Error('用户名不能为空');
+      }
+      if (password !== confirm) {
+        throw new Error('两次输入的密码不一致');
+      }
+      if (password.length < 8 || !/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
+        throw new Error('密码至少 8 位，且必须包含字母和数字');
+      }
+      if (['student', 'teacher', 'admin'].indexOf(role) === -1) {
+        throw new Error('角色值无效，仅支持 student/teacher/admin');
+      }
+      if (MOCK_USERS.filter((u) => u.username === username).length > 0) {
+        const err = new Error('用户名已存在');
+        err.status = 409;
+        throw err;
+      }
+
+      const user = {
+        id: MOCK_USERS.length + 1,
+        username: username,
+        name: username,
+        role: role,
+        password: password
+      };
+      MOCK_USERS.push(user);
+      return {
+        token: 'demo-offline-token-' + Date.now(),
+        user: { id: user.id, username: user.username, name: user.name, role: user.role }
+      };
+    });
+  }
+
   function mockQuestions() {
     return delay(300).then(() => ({ questions: MOCK_QUESTIONS.slice() }));
   }
@@ -340,6 +382,22 @@ const API = (() => {
       return withFallback(
         () => request('POST', '/auth/login', { username: username, password: password }),
         () => mockLogin(username, password)
+      );
+    },
+
+    /** 注册 POST /auth/register（成功即自动登录，返回 token + user） */
+    register(username, password, confirmPassword, role) {
+      const payload = {
+        username: username,
+        password: password,
+        confirm_password: confirmPassword
+      };
+      if (role) {
+        payload.role = role;
+      }
+      return withFallback(
+        () => request('POST', '/auth/register', payload),
+        () => mockRegister(payload)
       );
     },
 
