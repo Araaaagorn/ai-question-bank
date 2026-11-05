@@ -57,6 +57,10 @@ window.app = {
     ChatPage.sendMessage();
   },
 
+  cancelChat() {
+    ChatPage.cancel();
+  },
+
   navigate
 };
 
