@@ -14,7 +14,10 @@ body {
 .error-box {
   background: #fff0f0; border: 1px solid #f87171; border-radius: 8px;
   padding: 12px 16px; margin: 12px 0; color: #b91c1c; font-size: 14px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
 }
+.error-box span { flex: 1 1 200px; }
+.empty-state { text-align: center; color: #9ca3af; font-size: 14px; padding: 32px 0; }
 
 /* ── Navbar ── */
 .navbar {
@@ -124,6 +127,7 @@ body {
   background: #f9fafb; font-size: 14px;
 }
 .q-opt-label { font-weight: 600; color: #4b5563; margin-right: 6px; }
+.q-opt-empty { color: #9ca3af; font-size: 13px; }
 .q-meta { display: flex; gap: 8px; margin-bottom: 8px; }
 .q-type, .q-knowledge {
   font-size: 12px; padding: 2px 8px; border-radius: 20px;
@@ -187,10 +191,20 @@ body {
 }
 .chat-controls input:focus { border-color: #3b82f6; }
 .chat-controls input:disabled { background: #f3f4f6; color: #9ca3af; }
+.chat-controls .btn:disabled { background: #93b4f5; cursor: not-allowed; }
 
 /* ── Responsive ── */
 @media (max-width: 600px) {
   .login-card { width: 100%; border-radius: 0; box-shadow: none; }
   .msg { max-width: 90%; }
   .chat-header h2 { font-size: 14px; }
+  .container { padding: 12px; }
+  .navbar-inner { padding: 0 8px; gap: 8px; }
+  .navbar-user { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40vw; }
+  .q-card { padding: 14px 14px; }
+  .chat-input-bar { padding: 10px; gap: 6px; }
+  .chat-controls { gap: 6px; }
+  .chat-controls input { font-size: 14px; padding: 9px 10px; }
+  .chat-controls .btn { padding: 8px 12px; }
+  .error-box { padding: 10px 12px; }
 }
