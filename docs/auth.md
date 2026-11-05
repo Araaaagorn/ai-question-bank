@@ -39,6 +39,8 @@ Content-Type: application/json
 | `confirm_password` | 是 | 确认密码，必须与 password 一致 |
 | `role` | 否 | 角色：`student`（默认）/ `teacher` / `admin` |
 
+> **前端范围说明**：网页端注册页只提供 `student` / `teacher` 两个选项，不开放自助注册 `admin`（管理员账号由平台负责人创建）。接口本身仍按上表接受三种角色，如需收紧为「自助注册仅 `student`」属服务端策略调整，另行跟进。
+
 **成功响应（201 Created）：**
 
 ```json

@@ -82,6 +82,13 @@ const ChatPage = (() => {
 
   /* ── 页面生命周期 ── */
   function show(questionId) {
+    /* 切题前先中止上一个活动任务：否则迟到的成功回调会把回复追加到新题目
+     * 的聊天区，并把 conversation_id 写进新题目的会话键。 */
+    if (activeController) {
+      activeController.abort();
+      activeController = null;
+      activeJobId = null;
+    }
     currentQuestionId = parseInt(questionId, 10);
     $('page-login').classList.add('hidden');
     $('navbar').classList.remove('hidden');
@@ -98,6 +105,9 @@ const ChatPage = (() => {
     $('detailContent').classList.add('hidden');
     $('aiAccessStatus').classList.add('hidden');
     setCancelVisible(false);
+    /* 旧任务被 abort 后不会走 finally 恢复 UI，这里必须重新放开输入态，
+     * 否则「提问后立刻切题」会让新题的输入框一直禁用。 */
+    setInputsEnabled(true);
 
     // 默认模式
     currentMode = 'solve';
@@ -194,12 +204,21 @@ const ChatPage = (() => {
     return currentQuestionId + ':' + currentMode;
   }
 
-  function getConversationId() {
-    return conversations.get(getConversationKey()) || null;
+  /* key 可显式传入：异步回调里必须用发送时的快照键，不能用当前页面的键 */
+  function setConversationId(id, key) {
+    conversations.set(key || getConversationKey(), id);
   }
 
-  function setConversationId(id) {
-    conversations.set(getConversationKey(), id);
+  /** 登出 / 切换用户时清空会话映射，避免复用上一个用户的 conversation_id */
+  function resetConversations() {
+    conversations.clear();
+    currentQuestionId = null;
+    currentMode = 'solve';
+    if (activeController) {
+      activeController.abort();
+      activeController = null;
+      activeJobId = null;
+    }
   }
 
   /* ── 发送消息 ── */
@@ -231,27 +250,36 @@ const ChatPage = (() => {
     setInputsEnabled(false);
     setCancelVisible(true);
 
-    activeController = new AbortController();
-    const conversationId = getConversationId();
+    /* 快照本次请求所属的题目/模式/会话键，供异步回调写回时使用 */
+    const askedQuestionId = currentQuestionId;
+    const askedMode = currentMode;
+    const conversationKey = getConversationKey();
+    const conversationId = conversations.get(conversationKey) || null;
+
+    const myController = new AbortController();
+    activeController = myController;
 
     try {
       const result = await API.chat({
-        questionId: currentQuestionId,
+        questionId: askedQuestionId,
         message: text,
         conversationId: conversationId,
-        mode: currentMode,
+        mode: askedMode,
         studentAnswer: studentAnswer,
-        signal: activeController.signal,
+        signal: myController.signal,
         onStatus: (job) => {
           updateLoadingText(loadingId, job);
         }
       });
 
+      /* 任务已被切题/登出中止：丢弃迟到结果，不污染当前页面 */
+      if (activeController !== myController) return;
+
       removeMessage(loadingId);
       addMessage('ai', result.reply || '（无回复）');
 
       if (result.conversation_id) {
-        setConversationId(result.conversation_id);
+        setConversationId(result.conversation_id, conversationKey);
       }
 
       if (!chatMockNoticeShown && API.isChatMocked && API.isChatMocked()) {
@@ -259,14 +287,18 @@ const ChatPage = (() => {
         addMessage('system', '⚠ 上面这条回复来自前端内置演示数据：后端 /api/v1/chat 尚未实现，不是真实 AI 生成。');
       }
     } catch (e) {
+      if (activeController !== myController) return;
       removeMessage(loadingId);
       handleChatError(e, text, studentAnswer);
     } finally {
-      activeController = null;
-      activeJobId = null;
-      setSendEnabled(true);
-      setInputsEnabled(true);
-      setCancelVisible(false);
+      /* 只有当前任务仍是自己时才恢复 UI，避免覆盖新任务的禁用状态 */
+      if (activeController === myController) {
+        activeController = null;
+        activeJobId = null;
+        setSendEnabled(true);
+        setInputsEnabled(true);
+        setCancelVisible(false);
+      }
     }
   }
 
@@ -331,7 +363,8 @@ const ChatPage = (() => {
     sendMessage,
     cancel,
     onModeChange,
-    retryDetail: () => loadQuestionDetail(currentQuestionId)
+    retryDetail: () => loadQuestionDetail(currentQuestionId),
+    resetConversations
   };
 })();
 
