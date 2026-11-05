@@ -76,8 +76,11 @@ body {
 .btn-block { width: 100%; }
 .btn-secondary { background: #e5e7eb; color: #374151; }
 .btn-secondary:hover { background: #d1d5db; }
+.btn-danger { background: #ef4444; color: #fff; }
+.btn-danger:hover { background: #dc2626; }
 
 /* ── Questions List ── */
+.q-manage-bar { margin: 12px 0; }
 .questions-list { margin-top: 12px; }
 .q-card {
   background: #fff; border-radius: 10px; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
@@ -157,6 +160,66 @@ body {
   font-size: 15px; outline: none;
 }
 .chat-input-bar input:focus { border-color: #3b82f6; }
+
+/* ── Question Management ── */
+.q-card-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+
+.form-group textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 15px;
+  outline: none;
+  resize: vertical;
+}
+
+.form-group textarea:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+}
+
+.radio-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 16px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.q-option-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.q-opt-label-input {
+  width: 60px;
+  padding: 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.q-opt-text-input {
+  flex: 1;
+  padding: 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.form-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+}
 
 /* ── Responsive ── */
 @media (max-width: 600px) {

@@ -309,6 +309,91 @@ const API = (() => {
     });
   }
 
+  function validateQuestionPayload(payload) {
+    const { content, type, answer, options, knowledge_points } = payload;
+    if (!content || !content.trim()) throw new Error('content 为必填非空字段');
+    if (type !== 'single_choice' && type !== 'short_answer') {
+      throw new Error('type 仅支持 single_choice 或 short_answer');
+    }
+    if (!answer || !answer.trim()) throw new Error('answer 为必填非空字段');
+    if (type === 'single_choice') {
+      if (!Array.isArray(options) || options.length === 0) {
+        throw new Error('单选题至少需要 1 个选项');
+      }
+      const labels = options.map((o) => o.label).filter(Boolean);
+      if (!labels.includes(answer)) {
+        throw new Error('answer 必须是某个选项的 label');
+      }
+      for (const o of options) {
+        if (!o.label || !o.label.trim() || !o.text || !o.text.trim()) {
+          throw new Error('每个选项需包含非空的 label 与 text');
+        }
+      }
+    } else if (options && options.length !== 0) {
+      throw new Error('简答题 options 必须为空数组');
+    }
+    if (knowledge_points && !Array.isArray(knowledge_points)) {
+      throw new Error('knowledge_points 必须为数组');
+    }
+  }
+
+  function mockCreateQuestion(payload) {
+    return delay(300).then(() => {
+      validateQuestionPayload(payload);
+      const id = Math.max(...MOCK_QUESTIONS.map((q) => q.id), 0) + 1;
+      const question = {
+        id,
+        content: payload.content,
+        type: payload.type,
+        options: payload.type === 'single_choice'
+          ? (payload.options || []).map((o) => ({ label: o.label, text: o.text }))
+          : [],
+        answer: payload.answer,
+        analysis: payload.analysis || '',
+        knowledge_points: Array.isArray(payload.knowledge_points)
+          ? payload.knowledge_points.filter((k) => typeof k === 'string')
+          : []
+      };
+      MOCK_QUESTIONS.push(question);
+      return { question };
+    });
+  }
+
+  function mockUpdateQuestion(id, payload) {
+    return delay(300).then(() => {
+      const num = parseInt(id, 10);
+      const idx = MOCK_QUESTIONS.findIndex((q) => q.id === num);
+      if (idx === -1) throw new Error('question not found');
+      const merged = { ...MOCK_QUESTIONS[idx] };
+      ['content', 'type', 'answer', 'analysis'].forEach((k) => {
+        if (Object.prototype.hasOwnProperty.call(payload, k)) merged[k] = payload[k];
+      });
+      if (payload.options !== undefined) {
+        merged.options = payload.type === 'single_choice'
+          ? (payload.options || []).map((o) => ({ label: o.label, text: o.text }))
+          : [];
+      }
+      if (payload.knowledge_points !== undefined) {
+        merged.knowledge_points = Array.isArray(payload.knowledge_points)
+          ? payload.knowledge_points.filter((k) => typeof k === 'string')
+          : [];
+      }
+      validateQuestionPayload(merged);
+      MOCK_QUESTIONS[idx] = merged;
+      return { question: merged };
+    });
+  }
+
+  function mockDeleteQuestion(id) {
+    return delay(300).then(() => {
+      const num = parseInt(id, 10);
+      const idx = MOCK_QUESTIONS.findIndex((q) => q.id === num);
+      if (idx === -1) throw new Error('question not found');
+      MOCK_QUESTIONS.splice(idx, 1);
+      return { status: 'ok' };
+    });
+  }
+
   /* ── 对外接口（签名与在线模式完全一致） ── */
   return {
     getToken,
@@ -366,6 +451,30 @@ const API = (() => {
         () => request('POST', '/chat', { question_id: questionId, message: message }),
         () => mockChat(questionId, message),
         () => { chatMocked = true; }
+      );
+    },
+
+    /** 新增题目 POST /questions */
+    createQuestion(payload) {
+      return withFallback(
+        () => request('POST', '/questions', payload),
+        () => mockCreateQuestion(payload)
+      );
+    },
+
+    /** 修改题目 PUT /questions/{id} */
+    updateQuestion(id, payload) {
+      return withFallback(
+        () => request('PUT', '/questions/' + id, payload),
+        () => mockUpdateQuestion(id, payload)
+      );
+    },
+
+    /** 删除题目 DELETE /questions/{id} */
+    deleteQuestion(id) {
+      return withFallback(
+        () => request('DELETE', '/questions/' + id),
+        () => mockDeleteQuestion(id)
       );
     }
   };
