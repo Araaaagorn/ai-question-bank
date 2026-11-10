@@ -1,0 +1,79 @@
+@startuml ood3_interaction_activity
+' OOD-图3：典型业务交互流程——学生 AI 答疑（前端视角活动图，含异常交互）
+' 依据：web/js/chat.js（sendMessage/handleChatError/refreshAiAccess）、pi-chat-client.js、
+'       docs/pi-chat-api.md §5 错误表
+|学生|
+start
+:进入对话页 #chat/{id};
+|前端 ChatPage|
+:中止旧任务并复位输入态;
+:加载题目详情 GET /questions/{id};
+if (加载成功?) then (是)
+  :渲染题干/选项/知识点/答案解析折叠;
+else (否)
+  :错误框 + "重试"按钮;
+  stop
+endif
+:静默查询 AI 资格 GET /ai/access;
+if (allowed?) then (是)
+  :启用发送按钮;
+else (否/查询失败)
+  :状态横幅提示（未授权/已撤销/已到期/查询失败）;
+  :禁用发送（离线演示除外）;
+  stop
+endif
+|学生|
+:选择教学模式 solve/hint/review;
+:输入问题（review 另填作答）;
+|前端 ChatPage|
+if (review 且未填作答?) then (是)
+  :系统消息提示补填作答;
+  stop
+endif
+:禁用输入、显示取消按钮、消息区"排队中";
+:POST /api/v1/chat;
+if (202 受理?) then (是)
+  repeat
+    :GET /api/v1/chat/{job_id}\n（800ms 轮询，≤45s）;
+    :按 status 更新提示\nqueued=排队中 / running=解答中;
+  repeat while (queued 或 running?) is (是) no (终态)
+  switch (终态)
+  case (succeeded)
+    :escapeHtml 安全渲染 reply;
+    :按"题目+模式"保存 conversation_id;
+    if (model == mock?) then (是)
+      :标注"后端 Mock 模式";
+    endif
+  case (failed)
+    :显示 error 与 code;
+    :保留用户输入草稿;
+  case (cancelled)
+    :显示"已取消";
+  endswitch
+else (4xx/5xx)
+  switch (错误类别)
+  case (401)
+    :清理登录态并提示重新登录;
+  case (403 权限类)
+    :保留登录与输入，刷新权限，\n提示联系教师/平台负责人，不自动重试;
+  case (404 题目/对话)
+    :提示题目不可用或对话过期;
+  case (409 冲突)
+    :BUSY=等待；MODE_MISMATCH/LIMIT=\n清会话键新建对话;
+  case (429 额度)
+    :显示 quota 与 Retry-After，禁用发送;
+  case (5xx/超时)
+    :提示稍后重试（不自动重发 POST）;
+  endswitch
+endif
+|学生|
+if (继续追问?) then (是)
+  :同题同模式输入追问\n（复用 conversation_id）;
+  note right: 分支 Fork 为目标功能，\n当前为线性多轮
+  |前端 ChatPage|
+  :回到发送流程;
+  stop
+else (否)
+endif
+stop
+@enduml

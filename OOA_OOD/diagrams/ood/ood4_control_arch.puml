@@ -1,0 +1,82 @@
+@startuml ood4_control_arch
+' OOD-图4：控制驱动设计——系统控制架构（分层组件图）
+' 依据：docs/architecture.md §1-2、§7；server/src/main.c（装配顺序）、http_server.c（单轮询线程）、
+'       routes.c（分发）、ai_client.c（内部代理）、ai-service/src/server.ts+jobs.ts（异步执行）
+skinparam shadowing false
+skinparam componentStyle rectangle
+
+package "① 边界层（用户请求接收）" {
+  [浏览器 SPA\nweb/*.js\n(fetch + Bearer token)] as FE
+}
+
+package "② 接口层（C11 后端，单 MHD 轮询线程）" {
+  [HTTP 服务\nhttp_server.c\n请求体累积≤64KiB\n完成回调统一释放] as HTTP
+  [路由分发\nroute_dispatch\n(url+method 顺序匹配)] as RD
+  [静态文件服务\nserve_static\n(路径穿越防护)] as SS
+}
+
+package "③ 控制层（业务控制对象）" {
+  [认证控制器\nhandle_login/register/\nlogout/me] as CA
+  [题目控制器\nhandle_questions\n+ create/update/delete] as CQ
+  [对话代理控制器\nhandle_chat\n(字段白名单/UUID校验)] as CC
+  [教师API路由\nteacher_api_route] as CT
+}
+
+package "④ 领域服务层（控制逻辑）" {
+  [会话管理\nauth.c\n(内存Session×128)] as SV
+  [教师API与额度服务\nteacher_api.c\n(加密/扣次/退还/审计)] as TS
+  [平台授权服务\nai_access.c\n(默认拒绝)] as AS
+  [AI内部客户端\nai_client.c\n(libcurl,500/2000ms)] as AC
+}
+
+package "⑤ 数据访问层" {
+  [KV存储层 kv_store.c\n(namespace→同名表)] as KV
+  database "SQLite\nai_question_bank.db" as DB
+}
+
+package "⑥ 异步执行层（Pi 独立进程，仅 127.0.0.1）" {
+  [内部接口鉴权\nserver.ts\n(timingSafeEqual)] as PS
+  [有界任务队列\njobs.ts\n(并发4/等待32/TTL1h)] as JQ
+  [Agent 执行\nagent.ts\n(预算30s/3模型/6工具)] as AG
+}
+
+cloud "⑦ 外部：AI模型供应商" as MP
+
+FE --> HTTP : HTTP/JSON /api/v1/*
+HTTP --> RD
+RD ..> SS : 非 /api 路径
+RD --> CA
+RD --> CQ
+RD --> CC
+RD --> CT : teacher 模式\n/teacher/ai-api、/ai/access
+CA --> SV
+CA --> KV
+CQ --> KV
+CC --> SV
+CC --> TS : teacher 模式：归属/额度/解密
+CC --> AS : platform 模式：授权检查
+CC --> AC
+CT --> TS
+KV --> DB
+TS --> DB
+AS --> DB
+AC --> PS : 内部 HTTP\nBearer AI_SERVICE_TOKEN\n+ X-User-Id
+PS --> JQ
+JQ --> AG
+AG --> MP : 模型调用
+
+note right of HTTP
+  同步路径：C 对内部请求最多等 2s，
+  模型等待不占用 MHD 轮询线程；
+  数据库/会话操作遵循单线程串行假设
+end note
+note right of JQ
+  异步路径：202 受理后由事件循环 pump()；
+  取消/失败不提交历史；服务重启清空状态
+end note
+note bottom of TS
+  权限与额度控制：角色检查先于资源校验；
+  扣次在 BEGIN IMMEDIATE 事务内原子完成；
+  明确拒绝（4xx/AI_BUSY）才退还扣次
+end note
+@enduml

@@ -1,0 +1,41 @@
+@startuml ood2_page_flow
+' OOD-图2：核心页面关系与流转（页面级状态机）
+' 依据：web/js/app.js route()（hash 路由+登录守卫）、auth.js、chat.js show()/resetConversations()
+skinparam shadowing false
+
+state "登录页\n#login" as L
+state "注册页\n#register" as R
+state "题目列表页\n#questions" as Q
+state "对话页\n#chat/{id}" as C
+
+[*] --> L : 默认 hash / 未登录访问受保护页\n[守卫: !API.getToken()]
+
+L --> R : hash = #register
+R --> L : hash = #login
+L --> Q : 登录成功\nAPI.setAuth(token,user)
+R --> Q : 注册 201 自动登录
+Q --> C : navigate('#chat/'+id)
+C --> Q : navigate('#questions')
+Q --> L : 退出 app.logout()\nAPI.clearAuth + ChatPage.resetConversations()
+C --> L : 退出（同上）
+
+state C {
+  [*] --> 中止旧任务 : show(id) 进入\nactiveController.abort()
+  中止旧任务 --> 加载题目详情 : GET /questions/{id}
+  加载题目详情 --> 展示详情 : 200 渲染题干/选项/知识点
+  加载题目详情 --> 详情错误态 : 401/404/网络异常\n（提供"重试"按钮）
+  详情错误态 --> 加载题目详情 : retryDetail()
+  展示详情 --> 查询AI资格 : refreshAiAccess(silent)\nGET /ai/access
+  查询AI资格 --> 可发送 : allowed=true
+  查询AI资格 --> 禁发送 : allowed=false/查询失败\n显示状态横幅文案
+  可发送 --> 任务进行中 : sendMessage()\nPOST /chat → 轮询
+  禁发送 --> 任务进行中 : [离线演示模式才允许]
+  任务进行中 --> 展示详情 : succeeded/failed/cancelled\n恢复输入态
+}
+
+note right of C
+  401 → 提示重新登录并清理本地状态；
+  切题/登出先 abort 旧任务，防止迟到回复
+  污染新页面（chat.js show()/resetConversations）
+end note
+@enduml

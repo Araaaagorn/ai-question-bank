@@ -1,0 +1,77 @@
+@startuml uc2_ai_config
+' AI+题库智能教学平台 — 用况图2：AI 解答与 API 配置（已实现，默认 teacher 路由模式）
+' 依据：server/src/routes.c(handle_chat/handle_ai_access)、teacher_api_routes.c、teacher_api.c、
+'       ai_client.c、ai_access.c、ai-service/src/{server,jobs}.ts、docs/pi-chat-api.md、docs/teacher-api.md
+left to right direction
+skinparam shadowing false
+skinparam actorStyle awesome
+skinparam packageStyle rectangle
+
+actor "学生\nstudent" as Student
+actor "教师\nteacher" as Teacher
+actor "运维人员\n(可信服务器CLI)" as Ops
+actor "AI模型供应商\n(外部系统,DeepSeek兼容)" as Provider
+
+rectangle "AI+题库智能教学平台 — AI 解答与 API 配置" {
+  usecase "查询AI使用资格与额度\nGET /ai/access?question_id" as UCAccess
+  usecase "提交AI解答任务\nPOST /chat（202 异步受理）" as UCSubmit
+  usecase "同题追问\n（携带 conversation_id）" as UCFollow
+  usecase "查询AI任务状态\nGET /chat/{job_id}" as UCStatus
+  usecase "取消AI任务\nDELETE /chat/{job_id}" as UCCancel
+  usecase "执行AI解答任务\n(Pi 后台队列异步执行)" as UCExec
+  usecase "解析题目归属教师\n(qdata.teacher_id)" as UCResolve
+  usecase "校验并扣减学生日额度\n(默认20次/学生/教师/日)" as UCQuota
+  usecase "配置教师AI API\nPUT /teacher/ai-api" as UCPut
+  usecase "查询教师API配置(脱敏)\nGET /teacher/ai-api" as UCGet
+  usecase "启停教师API配置\nPATCH /teacher/ai-api" as UCPatch
+  usecase "加密存储API Key\n(AES-256-GCM+主密钥)" as UCEnc
+  usecase "授予/撤销平台AI授权\n(仅 platform 兼容模式)" as UCGrant
+}
+
+Student --> UCAccess
+Student --> UCSubmit
+Student --> UCStatus
+Student --> UCCancel
+Teacher --> UCAccess
+Teacher --> UCSubmit
+Teacher --> UCStatus
+Teacher --> UCPut
+Teacher --> UCGet
+Teacher --> UCPatch
+
+UCFollow ..> UCSubmit : <<extend>>\n[已有对话继续追问]
+UCSubmit ..> UCResolve : <<include>>
+UCSubmit ..> UCQuota : <<include>>\n[学生角色·teacher模式]
+UCSubmit ..> UCExec : <<include>>\n(受理成功后异步触发)
+UCAccess ..> UCResolve : <<include>>\n(查询不扣次数)
+UCPut ..> UCEnc : <<include>>
+UCPatch ..> UCEnc : <<include>>
+
+Provider --> UCExec
+Ops --> UCGrant
+
+note bottom of UCSubmit
+  三种教学模式：solve 完整讲解 /
+  hint 分层提示(1→2→3级) / review 错因分析；
+  同对话禁止切换模式（409）
+end note
+
+note bottom of UCExec
+  任务预算：总30s（含排队）、
+  ≤3次模型调用、≤6次工具调用；
+  状态仅在 Pi 内存保存（TTL 1小时）
+end note
+
+note right of UCGrant
+  运维通过 scripts/ai_access.py
+  直接写 SQLite（grant/revoke 同事务
+  追加 ai_access_audit），无 HTTP 写入口；
+  默认 teacher 模式下不使用
+end note
+
+note right of UCGet
+  GET 只回 configured/enabled/model/
+  masked_key/version，绝不回显完整 Key；
+  student/admin 调用管理接口返回 403
+end note
+@enduml

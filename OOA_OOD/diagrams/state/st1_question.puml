@@ -1,0 +1,33 @@
+@startuml st1_question
+' 状态图1：题目生命周期（业务对象状态）
+' 依据：server/src/db.c(db_seed_questions)、routes.c(handle_question_create/update/delete、
+'       handle_chat 的 status 检查)、docs/questions.md
+' 说明：当前实现中题目创建即 active；无草稿/待审核状态（学生提交审核为待办功能）；
+'       archived 仅为保留字段，无任何 API 可写入（灰色虚线表示预留迁移）
+skinparam shadowing false
+
+state "已发布\n(status=active)" as Published
+state "已归档\n(status=archived)" as Archived <<预留状态>>
+
+[*] --> Published : 系统启动 seed 5 道演示题\ndb_seed_questions()\n（teacher_id=1，seed_key 幂等防重）
+[*] --> Published : POST /api/v1/questions [teacher/admin]\n[守卫: content/type/answer/options 校验通过]\n动作: status := "active"，id := max+1
+
+Published --> Published : PUT /api/v1/questions/{id}\n[守卫: 合并后整体校验通过]\n动作: 覆盖被提交字段（id 不变）
+Published --> [*] : DELETE /api/v1/questions/{id}\n动作: kv_delete_key 物理删除\n（该 id 的 GET 返回 404）
+
+Published -[#999999,dashed]-> Archived : 预留迁移\n（当前无归档 API，\n仅数据层直接改 status 字段）
+Archived -[#999999,dashed]-> Published : 预留恢复
+
+note right of Published
+  GET 列表/详情当前不按 status 过滤；
+  POST /api/v1/chat 要求 status = active，
+  否则 404 QUESTION_NOT_FOUND
+  （routes.c handle_chat）
+end note
+
+note bottom of Archived
+  草稿、待审核、审核驳回等状态未实现：
+  学生提交→教师审核流程（SRS F-04 /
+  Backlog F04）为待办，无代码支撑
+end note
+@enduml

@@ -16,6 +16,8 @@
 
 功能预期详见 [`docs/AI题库项目整体预期功能说明书.md`](docs/AI题库项目整体预期功能说明书.md)。
 
+**面向对象分析与设计文档**（用况图/类图/顺序图/状态图/包图 + OOD 设计，含 PlantUML 源文件与渲染图）见 [`OOA_OOD/README.md`](OOA_OOD/README.md)。
+
 ## 技术栈（C 语言）
 
 | 模块 | 技术 | 说明 |
@@ -40,6 +42,7 @@
 │   └── .env.example       # 环境变量配置示例
 ├── web/                   # 静态前端（index.html / css / js）
 ├── docs/                  # 需求文档、架构说明、环境部署指南
+├── OOA_OOD/               # 面向对象分析与设计文档（UML 图 + PlantUML 源文件）
 ├── scripts/               # 环境检查/安装、GitHub 初始化
 ├── deploy/                # 部署配置（systemd 服务示例）
 └── .github/               # PR 模板、CODEOWNERS、CI workflow、分支保护

@@ -1,0 +1,157 @@
+@startuml cls1_domain
+' AI+题库智能教学平台 — 类图1：用户与题库领域（分析层对象模型）
+' 说明：后端为 C11 过程式代码，本图为分析层抽象：C 结构体/函数与 kv_store 数据
+'       被抽象为 UML 类；«待实现» 类仅有需求依据（SRS/Backlog），无代码支撑。
+' 依据：server/src/db.c、auth.c、routes.c（题目处理器）、docs/auth.md、docs/questions.md
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam class {
+  BackgroundColor<<实体类>> #E3F2FD
+  BorderColor<<实体类>> #1565C0
+  BackgroundColor<<值对象>> #F1F8E9
+  BorderColor<<值对象>> #558B2F
+  BackgroundColor<<待实现>> #FFF3E0
+  BorderColor<<待实现>> #E65100
+}
+
+enum "角色 Role" as Role {
+  student
+  teacher
+  admin
+}
+
+class "用户 User" as User <<实体类>> {
+  +id : int
+  +username : String
+  +name : String
+  +role : Role
+  +passwordHash : String «SHA-256(salt‖pw),固定salt»
+  --
+  +db_create_user(db, username, hash, role) : int
+  +db_query_user_by_username(db, username) : JSON
+  +db_query_password_hash(db, username) : String
+  +db_seed_users(db) : int
+}
+note bottom of User
+  持久化：kv_store namespace "users"
+  → SQLite 表 users(key_name, value_name, value)
+  复合主键 (key_name, value_name)
+end note
+
+class "管理员 Administrator" as Admin <<实体类>>
+class "教师 Teacher" as Teacher <<实体类>>
+class "学生 Student" as Student <<实体类>>
+User <|-- Admin
+User <|-- Teacher
+User <|-- Student
+note right of Admin
+  分析层按角色泛化；
+  代码实现为 User.role 字段
+  + 路由层角色判断
+  （routes.c / teacher_api_routes.c）
+end note
+
+class "登录会话 Session" as Session <<实体类>> {
+  +token : char[64] «OpenSSL随机十六进制»
+  +userId : int
+  +role : String
+  +name : String
+  +expiresAt : time_t «now+86400»
+  +active : bool
+  --
+  +{static} session_create(userId, role, name) : const char*
+  +{static} session_validate(token) : Session*
+  +{static} session_destroy(token) : void
+  +{static} extract_bearer_token(header) : const char*
+}
+note bottom of Session
+  服务端内存数组 g_sessions[128]，
+  每 16 次创建触发一次压缩清理；
+  仅单线程 demo 模式，重启即失效
+end note
+
+enum "题型 QuestionType" as QType {
+  single_choice
+  short_answer
+}
+enum "题目状态 QuestionStatus" as QStatus {
+  active
+  archived «预留,无API可写»
+}
+
+class "题目 Question" as Question <<实体类>> {
+  +id : int
+  +content : String
+  +type : QuestionType
+  +options : Option[]
+  +answer : String
+  +analysis : String
+  +knowledgePoints : String[]
+  +teacherId : int «归属教师,seed题为1(admin)»
+  +status : QuestionStatus
+  +seedKey : String «内部幂等键,不对外»
+  --
+  +validate() : bool «content/type/answer/options一致性»
+  +toJSON() : cJSON*
+}
+note bottom of Question
+  持久化：kv_store namespace "qdata"
+  → SQLite 表 qdata(key_name=题目id, value_name=字段名)
+  写接口仅 teacher/admin；id=当前最大id+1
+end note
+
+class "选项 Option" as Option <<值对象>> {
+  +label : String
+  +text : String
+}
+class "知识点 KnowledgePoint" as KP <<值对象>> {
+  +name : String
+}
+
+User "1" -- "0..*" Session : 登录创建 >
+Teacher "1" -- "0..*" Question : teacherId 归属 >
+Question *-- "0..*" Option : JSON 内嵌(组合)
+Question o-- "0..*" KP : knowledge_points\n字符串数组(聚合)
+Question --> QType
+Question --> QStatus
+User --> Role
+
+package "目标领域对象（需求有描述，当前无代码支撑）" {
+  class "题库 QuestionBank" as Bank <<待实现>> {
+    +id : int
+    +name : String
+    +teacherId : int
+  }
+  class "标签 Tag" as Tag <<待实现>> {
+    +id : int
+    +name : String
+  }
+  class "试卷 Paper" as Paper <<待实现>> {
+    +id : int
+    +name : String
+    +description : String
+    +teacherId : int
+    +status : String
+  }
+  class "试卷题目 PaperQuestion" as PaperQ <<待实现>> {
+    +order : int
+    +score : int
+  }
+  class "学生提交 Submission" as Sub <<待实现>> {
+    +id : int
+    +studentId : int
+    +content : String
+    +status : pending/approved/rejected
+  }
+}
+Bank "1" o-- "0..*" Question : 目标:题库组织题目
+Question "1" -- "0..*" Tag : 目标:多对多
+Paper "1" *-- "1..*" PaperQ
+PaperQ "0..*" --> "1" Question
+Student "1" -- "0..*" Sub : 目标:学生投稿
+note bottom of Bank
+  当前题目仅以 teacher_id 扁平归属，
+  无独立题库实体；试卷/提交审核见
+  docs/项目Backlog.md F03/F04（⬜ 待办）
+end note
+@enduml

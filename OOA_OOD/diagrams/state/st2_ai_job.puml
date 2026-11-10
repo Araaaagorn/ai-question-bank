@@ -1,0 +1,38 @@
+@startuml st2_ai_job
+' 状态图2：AI 解答任务生命周期（后台异步任务状态，Pi 进程内存）
+' 依据：ai-service/src/jobs.ts（submit/pump/execute/cancel/clean）、contracts.ts(JobStatus)、
+'       agent.ts（超时/上限/上游错误映射）、docs/pi-chat-api.md §3
+skinparam shadowing false
+
+state "排队中\n(queued)" as Queued
+state "执行中\n(running)" as Running
+state "成功\n(succeeded)" as Succeeded
+state "失败\n(failed)" as Failed
+state "已取消\n(cancelled)" as Cancelled
+
+[*] --> Queued : Jobs.submit() 受理\n[守卫: 队列+并发未满载且会话校验通过]\n动作: 202 返回 job_id/conversation_id\nconversation.activeJob := job.id
+
+Queued --> Running : pump() 取队首\n[守卫: running < 并发上限(默认4)]\n动作: status := running
+Queued --> Cancelled : DELETE /chat/{job_id}\n动作: 从队列移除；释放对话锁
+Queued --> Failed : 出队时剩余预算 ≤ 0\n[守卫: timeoutMs-(now-created) ≤ 0]\n动作: error := AI_TIMEOUT(504)
+
+Running --> Succeeded : Agent 正常完成\n[守卫: 未超时且未达调用上限]\n动作: 保存 reply/usage；\n提交对话历史 messages
+Running --> Failed : 超时 AI_TIMEOUT(504) /\n达上限 AI_CALL_LIMIT(502) /\n上游错误 AI_UPSTREAM_ERROR(502) /\n限流 AI_RATE_LIMITED(503) /\n输出超限 AI_OUTPUT_LIMIT(502) /\n无效响应 AI_INVALID_RESPONSE(502)
+Running --> Cancelled : DELETE → run.cancel()\n(agent.abort())\n动作: 本轮历史不提交
+
+Succeeded --> [*] : TTL 到期（默认1小时）\nclean() 清除任务对象
+Failed --> [*] : TTL 到期 clean() 清除
+Cancelled --> [*] : TTL 到期 clean() 清除
+
+note right of Running
+  预算：总30s（含排队）、≤3 次模型调用、
+  ≤6 次工具调用、输出 ≤2048 tokens；
+  SDK 自动重试已关闭（maxRetries=0）
+end note
+
+note bottom of Cancelled
+  状态仅存 Pi 进程内存：服务重启即清空；
+  同一 conversation 同时仅允许一个 active 任务，
+  结束（含失败/取消）在 finally 中释放锁
+end note
+@enduml

@@ -1,0 +1,72 @@
+@startuml uc3_target
+' AI+题库智能教学平台 — 用况图3：目标功能（需求文档有描述、当前仓库无代码支撑）
+' 依据：docs/AI题库项目整体预期功能说明书.md、docs/软件需求说明书.md（F-05~F-17）、
+'       docs/项目Backlog.md（2026-11-09 状态核实）；以下用况均未在 server/web/ai-service 中实现
+left to right direction
+skinparam shadowing false
+skinparam actorStyle awesome
+skinparam packageStyle rectangle
+skinparam usecase {
+  BackgroundColor<<目标功能>> #FFF3E0
+  BorderColor<<目标功能>> #E65100
+  BackgroundColor<<部分实现>> #FFFDE7
+  BorderColor<<部分实现>> #F9A825
+}
+
+actor "教师\nteacher" as Teacher
+actor "学生\nstudent" as Student
+actor "管理员\nadmin" as Admin
+
+rectangle "目标功能（待实现 / 部分实现）" {
+  usecase "创建/编辑试卷" as UCExam <<目标功能>>
+  usecase "组织试卷题目\n(排序与分值)" as UCPaperQ <<目标功能>>
+  usecase "导出试卷\n(PDF/Word/Markdown/LaTeX)" as UCExport <<目标功能>>
+  usecase "批量导入题目\n(Word/PDF/图片/LaTeX/MD/纯文本)" as UCImport <<目标功能>>
+  usecase "提交题目\n(学生投稿)" as UCSubmitQ <<目标功能>>
+  usecase "审核学生提交\n(通过/驳回/修改后通过)" as UCReviewQ <<目标功能>>
+  usecase "分支讨论树管理\n(Fork分支/折叠/推荐答案标记)" as UCFork <<部分实现>>
+  usecase "题目搜索与筛选" as UCSearch <<目标功能>>
+  usecase "用户管理\n(创建/禁用/改角色/重置密码)" as UCUserMgmt <<目标功能>>
+  usecase "审计日志查询" as UCAudit <<部分实现>>
+  usecase "个人中心\n(学习记录/提问历史/额度查看)" as UCProfile <<目标功能>>
+  usecase "重复提问检测\n(向量检索+语义相似度)" as UCDup <<目标功能>>
+  usecase "通知中心" as UCNotify <<目标功能>>
+  usecase "API捐赠\n(学生向教师捐赠API资源)" as UCDonate <<目标功能>>
+  usecase "数据备份与恢复" as UCBackup <<目标功能>>
+}
+
+Teacher --> UCExam
+Teacher --> UCExport
+Teacher --> UCImport
+Teacher --> UCReviewQ
+Teacher --> UCSearch
+Teacher --> UCDup
+Student --> UCSubmitQ
+Student --> UCFork
+Student --> UCProfile
+Student --> UCDonate
+Admin --> UCUserMgmt
+Admin --> UCAudit
+Admin --> UCBackup
+Admin --> UCNotify
+
+UCExam ..> UCPaperQ : <<include>>
+UCSubmitQ ..> UCReviewQ : <<include>>\n(教师可配置自动通过策略)
+
+note bottom of UCFork
+  多轮追问（conversation_id 线性对话）已实现，
+  见用况图2；Fork 分支、节点折叠、搜索定位、
+  推荐答案标记无代码支撑（Backlog F06 🟡）
+end note
+
+note bottom of UCAudit
+  仅存在 ai_access_audit 与 teacher_ai_audit
+  两张写入型审计表（CLI/后端写入），
+  无任何查询接口与管理页面（Backlog F12 🟡）
+end note
+
+note right of UCExam
+  SRS F-07 曾定义 /api/v1/exams/* 契约，
+  server/ 中无 exam/paper 相关代码
+end note
+@enduml

@@ -1,0 +1,113 @@
+@startuml seq3_ai_solve
+' 顺序图3：学生提交题目并获取 AI 解答（默认 teacher 路由模式，异步任务）
+' 依据：web/js/chat.js+pi-chat-client.js、server/src/routes.c(handle_chat)、teacher_api.c、
+'       ai_client.c、ai-service/src/server.ts+jobs.ts+agent.ts、docs/pi-chat-api.md、docs/teacher-api.md
+autonumber
+skinparam shadowing false
+
+actor "学生" as S
+boundary "对话页 ChatPage\n(web/js/chat.js)" as UI
+boundary "Pi任务客户端\n(web/js/pi-chat-client.js)" as PC
+control "路由分发器\nroute_dispatch" as RD
+control "对话代理控制器\nhandle_chat\n(routes.c)" as CH
+entity "会话管理\nauth.c" as SESS
+entity "教师API服务\nteacher_api.c" as TA
+database "SQLite\nqdata / teacher_ai_*" as DB
+control "AI客户端\nai_client.c\n(libcurl)" as AC
+control "Pi内部接口\nserver.ts" as PS
+control "任务队列\nJobs\n(jobs.ts)" as JQ
+control "Agent执行器\nagent.ts" as AG
+participant "AI模型供应商\n(DeepSeek兼容API)" as MP
+
+== 阶段0：进入页面查询 AI 使用资格与额度（GET 不扣次数） ==
+S -> UI : 打开题目对话页 #chat/{id}
+UI -> RD : GET /api/v1/ai/access?question_id=N\nBearer token
+RD -> TA : teacher_api_resolve(user, role, N, charge=0)
+TA -> DB : BEGIN IMMEDIATE：身份解析 → qdata.teacher_id\n→ 配置存在/启用 → 读取当日 used → COMMIT
+TA --> RD : {ai_access:{allowed,status}, teacher_id, quota{limit,used,remaining,reset_at}}
+RD --> UI : 200
+alt allowed = false（未配置/停用/额度用尽）
+  UI --> S : 禁用发送按钮，按 reason_code 提示\n（保留登录与草稿）
+end
+
+== 阶段1：提交解答任务 ==
+S -> UI : 选择模式(solve/hint/review)、输入问题\n(review 需填作答)
+UI -> PC : sendPiChat({questionId, message, mode, ...})
+PC -> RD : POST /api/v1/chat\n{question_id, message, mode}
+RD -> CH : handle_chat(...)
+CH -> SESS : session_validate(token)
+alt 会话无效
+  CH --> PC : 401 UNAUTHORIZED
+end
+CH -> CH : Content-Type=application/json 检查(415)\nchat_fields_valid：字段白名单/类型/长度≤4000/\nmode 枚举/review 与 student_answer 互斥校验(400)
+CH -> DB : kv_to_question(question_id) 读取题目
+alt 题目不存在 或 status ≠ active
+  CH --> PC : 404 QUESTION_NOT_FOUND
+end
+CH -> TA : teacher_api_resolve(user, role, question, charge=1)
+TA -> DB : BEGIN IMMEDIATE：\n① identity() 校验账号唯一且角色匹配\n② 读 qdata.teacher_id 解析归属教师\n③ load() 配置并检查 enabled\n④ usage() 当日计数；学生且 used≥limit → AI_QUOTA_EXCEEDED\n⑤ 扣次 used+1 并写 teacher_ai_charges\n⑥ AES-256-GCM 解密 Key → TeacherExecution\nCOMMIT
+alt 未配置 / 停用 / 额度用尽
+  TA --> CH : 错误码 + quota 快照
+  CH --> PC : 404 AI_API_NOT_CONFIGURED /\n403 AI_API_DISABLED /\n429 AI_QUOTA_EXCEEDED（附 Retry-After）
+end
+TA --> CH : TeacherExecution{api_key, model, teacher_id, version}
+CH -> CH : 组装内部 payload：\n{user_id, question{...}, message, mode, execution}
+CH -> AC : ai_service_request(POST, "/internal/v1/jobs", payload)
+AC -> PS : 内部 HTTP（连接500ms/总2000ms）\nBearer AI_SERVICE_TOKEN + X-User-Id
+PS -> PS : timingSafeEqual 校验服务凭证(401)\nparseSubmission 严格字段校验(400)
+PS -> JQ : jobs.submit(request)
+JQ -> JQ : 新建 Conversation（绑定 user+question+mode）\nChatJob.status=queued，入队，setImmediate(pump)
+JQ --> PS : job view（queued）
+PS --> AC : 202 {job_id, conversation_id, question_id, mode, status}
+alt Pi 明确拒绝（400/404/409/413/415/503 AI_BUSY）
+  AC --> CH : 拒绝响应
+  CH -> TA : teacher_api_refund(charge_id) 释放扣次
+end
+CH -> CH : OPENSSL_cleanse(payload) 擦除明文 Key
+CH --> PC : 202 转发
+PC --> UI : 返回 job_id，onStatus 显示"排队中"
+
+== 阶段2：Pi 后台异步执行（不占用 C 的 MHD 轮询线程） ==
+JQ -> AG : pump() 取任务 → execute → startAgent
+AG -> AG : teaching.ts 注入系统提示\n（solve → skills/solve-question/SKILL.md）
+loop 至多 3 次模型调用、6 次工具调用、总预算 30s
+  AG -> MP : Chat Completions 流式请求（教师 Key）
+  MP --> AG : 模型输出（可含工具调用）
+  AG -> AG : 执行受限工具：arithmetic /\nsolve_linear_equation / verify_linear_solution
+end
+AG --> JQ : Completion{reply, model, usage, messages}
+JQ -> JQ : status=succeeded；提交对话历史；\n释放 conversation.activeJob
+
+== 阶段3：前端轮询获取结果 ==
+loop 每 800ms 一次，等待上限 45s
+  PC -> RD : GET /api/v1/chat/{job_id}
+  RD -> CH : handle_chat（submit=0 分支）
+  CH -> CH : chat_uuid_valid(job_id)，否则 404 JOB_NOT_FOUND
+  CH -> AC : 转发 GET /internal/v1/jobs/{job_id}
+  AC -> PS : 内部 HTTP（X-User-Id=登录用户）
+  PS -> JQ : jobs.get(job_id, owner)
+  alt 跨用户或不存在
+    JQ --> PS : 404 JOB_NOT_FOUND
+  end
+  PS --> AC : 200 任务视图
+  AC --> CH : 校验响应结构后透传
+  CH --> PC : 200 {status, ...}
+  PC -> UI : onStatus(job) 更新"排队中/解答中"
+end
+PC --> UI : 终态任务对象 {reply, conversation_id, usage}
+UI -> UI : escapeHtml 安全渲染 reply\n按"题目+模式"保存 conversation_id
+UI --> S : 展示 AI 解答
+
+== 异常分支（节选） ==
+opt 用户点击取消 / 切换题目
+  PC -> RD : DELETE /api/v1/chat/{job_id}（独立短超时）
+  RD -> PS : 转发 DELETE
+  PS -> JQ : jobs.cancel：queued 出队 / running 调 agent.abort()
+  JQ --> PC : 200 {status:"cancelled"}（本轮不进历史）
+end
+opt 任务失败（超时/上游错误/超限）
+  JQ -> JQ : status=failed，error{error, code, http_status}
+  PC --> UI : 轮询得到 failed → 停止轮询
+  UI --> S : 显示 error 文案与 code\n（保留输入，不自动重发 POST）
+end
+@enduml

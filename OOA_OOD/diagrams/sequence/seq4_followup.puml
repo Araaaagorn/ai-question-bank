@@ -1,0 +1,69 @@
+@startuml seq4_followup
+' 顺序图4：学生基于已有 AI 解答追问，形成多轮对话（分支讨论树的线性子集）
+' 依据：web/js/chat.js（conversations 按"题目+模式"隔离）、ai-service/src/jobs.ts(submit 校验链)、
+'       docs/pi-chat-api.md §6；说明：Fork 分支/节点折叠/推荐标记未实现（目标功能）
+autonumber
+skinparam shadowing false
+
+actor "学生" as S
+boundary "对话页 ChatPage" as UI
+boundary "Pi任务客户端" as PC
+control "对话代理控制器\nhandle_chat" as CH
+entity "教师API服务\nteacher_api.c" as TA
+control "Pi内部接口\nserver.ts" as PS
+control "任务队列 Jobs\n(jobs.ts)" as JQ
+control "Agent执行器\nagent.ts" as AG
+
+S -> UI : 在同一题目页继续输入追问
+UI -> UI : 取 conversations["题目:模式"] 中保存的 conversation_id
+UI -> PC : sendPiChat({questionId, message, conversationId, mode?})
+PC -> CH : POST /api/v1/chat\n{question_id, message, conversation_id}
+CH -> CH : 登录/字段校验（同顺序图3）
+CH -> TA : teacher_api_resolve(charge=1)（追问同样计 1 次）
+TA --> CH : TeacherExecution（credentialScope=teacherId:version）
+CH -> PS : 内部 POST /internal/v1/jobs（payload 含 execution）
+PS -> JQ : jobs.submit(request)
+
+JQ -> JQ : conversations.get(conversation_id)
+alt 对话不存在 / 跨用户 / 跨题目
+  JQ --> PS : 404 CONVERSATION_NOT_FOUND
+  PS --> PC : 404
+  PC --> UI : 提示"对话已过期，请重新开始"
+else 教师配置版本变化（credentialScope 不同）
+  JQ --> PS : 409 AI_CREDENTIAL_CHANGED
+  PC --> UI : 清除本地 conversation_id，以新对话重试（禁止自动重发）
+else 同对话切换教学模式
+  JQ --> PS : 409 CONVERSATION_MODE_MISMATCH
+  PC --> UI : 前端切换模式时本就新建对话（清空会话键）
+else 同对话已有任务在跑
+  JQ --> PS : 409 CONVERSATION_BUSY
+  PC --> UI : 提示等待当前解答完成
+else 历史过长（>12 轮成功提问 或 >64KB）
+  JQ --> PS : 409 CONVERSATION_LIMIT
+  PC --> UI : 提示新建对话继续
+else 校验通过
+  JQ -> JQ : hint 模式：hintLevel = min(3, 1+历史成功轮数)\n（失败/取消不升级）
+  JQ -> JQ : 新建 ChatJob(queued)，conversation.activeJob = job.id
+  JQ --> PS : 202 job view
+  PS --> PC : 202
+  PC --> UI : 显示排队/解答中
+end
+
+JQ -> AG : execute：startAgent(config, request, conversation.messages, teaching)
+AG -> AG : 恢复完整历史（含工具消息对）后执行 Agent 循环
+AG --> JQ : Completion{reply, usage, messages}
+JQ -> JQ : succeeded：conversation.messages = result.messages\n（失败/取消不提交本轮）
+loop 前端 800ms 轮询（同顺序图3）
+  PC -> CH : GET /api/v1/chat/{job_id}
+  CH --> PC : 200 任务视图
+end
+PC --> UI : {reply, conversation_id}
+UI -> UI : 追加 AI 消息；conversation_id 不变（同对话继续）
+UI --> S : 展示追问答复
+
+note over JQ
+  当前对话为"用户+题目+模式"维度的线性多轮结构；
+  需求中的 Fork 分支、节点折叠、搜索定位、
+  推荐答案标记（SRS F-11）无代码支撑，属目标功能
+end note
+@enduml

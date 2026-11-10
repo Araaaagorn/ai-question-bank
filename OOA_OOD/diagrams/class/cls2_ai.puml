@@ -1,0 +1,198 @@
+@startuml cls2_ai
+' AI+题库智能教学平台 — 类图2：AI 解答、对话与额度领域
+' 依据：ai-service/src/{jobs,agent,teaching,math-tools,contracts,config}.ts、
+'       server/src/teacher_api.c、ai_access.c、routes.c(handle_chat)、docs/teacher-api.md
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam class {
+  BackgroundColor<<实体类>> #E3F2FD
+  BorderColor<<实体类>> #1565C0
+  BackgroundColor<<控制类>> #F3E5F5
+  BorderColor<<控制类>> #6A1B9A
+  BackgroundColor<<值对象>> #F1F8E9
+  BorderColor<<值对象>> #558B2F
+}
+
+enum "任务状态 JobStatus" as JobStatus {
+  queued
+  running
+  succeeded
+  failed
+  cancelled
+}
+enum "教学模式 TeachingMode" as TeachingMode {
+  solve
+  hint
+  review
+}
+
+class "对话 Conversation" as Conv <<实体类>> {
+  +id : UUID
+  +owner : int «用户id»
+  +question : int «题目id»
+  +mode : TeachingMode
+  +credentialScope : String «teacherId:version»
+  +messages : AgentMessage[] «完整模型/工具消息»
+  +activeJob : UUID? «同对话一次仅一个任务»
+  +touched : long
+  --
+  +canAccept(mode) : bool
+  +appendHistory(messages) : void
+}
+note bottom of Conv
+  仅存 Pi 进程内存，TTL 默认 1 小时；
+  上限：12 轮成功提问或历史 64KB → 409 CONVERSATION_LIMIT；
+  跨用户/跨题目访问返回 404
+end note
+
+class "AI解答任务 ChatJob" as Job <<实体类>> {
+  +id : UUID
+  +owner : int
+  +status : JobStatus
+  +teaching : TeachingContext
+  +created / finished : long
+  +result : Completion?
+  +error : {error, code, http_status}?
+  --
+  +view() : JSON «job_id/conversation_id/status/mode/hint_level/reply/usage»
+}
+
+class "解答结果 Completion" as Completion <<值对象>> {
+  +reply : String «安全文本,可含Markdown»
+  +model : String «mock 或配置模型名»
+  +usage : Usage
+}
+class "用量 Usage" as Usage <<值对象>> {
+  +inputTokens : int
+  +outputTokens : int
+  +modelCalls : int
+  +toolCalls : int
+}
+class "教学上下文 TeachingContext" as TCtx <<值对象>> {
+  +mode : TeachingMode
+  +hintLevel : int? «hint模式1→2→3,失败/取消不升级»
+}
+
+class "任务队列 Jobs" as Jobs <<控制类>> {
+  -jobs : Map<UUID, ChatJob>
+  -conversations : Map<UUID, Conversation>
+  -queue : ChatJob[] «有界:并发4+等待32»
+  -running : int
+  --
+  +submit(request) : view «202 受理»
+  +get(jobId, owner) : view
+  +cancel(jobId, owner) : view
+  -pump() : void «并发槽调度»
+  -execute(job) : Promise «预算30s»
+  -clean() : void «TTL 1h 清理»
+}
+
+class "Agent执行器 AgentRun" as Agent <<控制类>> {
+  +completion : Promise<Completion>
+  +cancel() : void
+  --
+  +startAgent(config, request, history, teaching) : AgentRun
+}
+note bottom of Agent
+  每任务独立 Pi Agent；系统提示由
+  teaching.ts 按模式注入对应 SKILL.md；
+  预算：≤3 次模型调用、≤6 次工具调用
+end note
+
+class "教学技能 TeachingSkill" as Skill <<实体类>> {
+  +name : solve-question/give-hints/review-answer
+  +description : String
+  +content : String «SKILL.md 正文,≤16KB»
+}
+class "受限数学工具 MathTool" as Tool <<控制类>> {
+  +arithmetic(a, b, op) : number
+  +solve_linear_equation(a, b, c) : {kind, x?}
+  +verify_linear_solution(a, b, c, x) : {holds, residual...}
+}
+note bottom of Tool
+  hint 模式仅开放 arithmetic；
+  只解 a*x+b=c，数值容差校验，
+  不核验原题/单位/定义域
+end note
+
+class "教师API配置 TeacherApiConfig" as TApi <<实体类>> {
+  +teacherId : int «PK»
+  +ownerKey : String «账号键绑定»
+  +model : String
+  +secret : Blob «AES-256-GCM: 12B nonce+密文+16B tag»
+  +maskedKey : String «****后4位»
+  +enabled : bool
+  +version : int «每次保存+1»
+  +updatedAt : int
+  --
+  +teacher_api_save(cfg, teacher, key, model, enabled) : code?
+  +teacher_api_toggle(cfg, teacher, enabled) : code?
+  +teacher_api_metadata(cfg, teacher) : JSON «脱敏»
+  +teacher_api_resolve(cfg, user, role, question, charge) : TeacherExecution
+}
+note bottom of TApi
+  AAD 绑定 teacher-api-v1:{id}:{owner}:{version}:{model}；
+  主密钥 AI_KEY_ENCRYPTION_KEY(64hex) 仅环境变量注入；
+  表 teacher_ai_credentials
+end note
+
+class "日额度使用 DailyQuota" as Quota <<实体类>> {
+  +studentId : int
+  +teacherId : int
+  +day : int «Asia/Shanghai 自然日»
+  +used : int
+  --
+  +limit : int «AppConfig.ai_student_daily_limit,默认20»
+}
+class "扣次记录 ChargeRecord" as Charge <<实体类>> {
+  +id : int «AUTOINCREMENT»
+  +studentId / teacherId / day
+  +released : bool «退还标记»
+  +createdAt : int
+}
+class "平台AI授权 AiAccessGrant" as Grant <<实体类>> {
+  +userId : int «PK»
+  +userKey : String
+  +enabled : bool
+  +expiresAt : int? «UTC秒»
+  +updatedAt : int
+  --
+  +ai_access_get(db, userId, now) : AiAccess «默认拒绝»
+}
+class "授权审计 AiAccessAudit" as GAudit <<实体类>> {
+  +id / userId / userKey
+  +action : grant|revoke
+  +actor / reason / createdAt
+}
+class "教师API审计 TeacherApiAudit" as TAudit <<实体类>> {
+  +id / teacherId / version
+  +action : configure_or_enable|disable
+  +createdAt
+}
+
+' ── 跨图引用（完整定义见 cls1_domain.puml）──
+class "用户 User" as User <<实体类>>
+class "教师 Teacher" as Teacher <<实体类>>
+class "学生 Student" as Student <<实体类>>
+class "题目 Question" as Question <<实体类>>
+
+Conv "1" -- "0..*" Job : 顺序任务(同时仅1个active) >
+Job *-- "0..1" Completion
+Completion *-- "1" Usage
+Job --> TCtx
+Conv --> TeachingMode
+Jobs o-- Conv
+Jobs o-- Job
+Jobs --> Agent : execute 启动
+Agent --> Skill : 按模式注入(依赖)
+Agent --> Tool : 受限工具集(依赖)
+Teacher "1" -- "0..1" TApi : 一教师一条配置(组合)
+TApi "1" -- "0..*" TAudit : 变更审计 >
+Grant "0..1" -- "1" User : 平台模式授权 >
+Grant "1" -- "0..*" GAudit : 授权审计 >
+Quota "1" -- "0..*" Charge : 扣次明细 >
+Student "1" -- "0..*" Quota : 每教师每日 >
+Teacher "1" -- "0..*" Quota
+Conv ..> Question : question 绑定(跨图引用)
+Conv ..> User : owner 绑定(跨图引用)
+@enduml

@@ -1,0 +1,69 @@
+@startuml seq1_login
+' 顺序图1：用户登录与身份认证
+' 依据：web/js/auth.js+api.js、server/src/routes.c(handle_login/handle_register)、
+'       server/src/auth.c、server/src/db.c（经 kv_store 读 users）
+autonumber
+skinparam shadowing false
+
+actor "用户\n(学生/教师/管理员)" as U
+boundary "登录页 AuthPage\n(web/js/auth.js)" as UI
+boundary "API客户端\n(web/js/api.js)" as API
+control "路由分发器\nroute_dispatch\n(routes.c)" as RD
+control "认证控制器\nhandle_login\n(routes.c)" as CL
+entity "会话管理\nauth.c" as SESS
+entity "KV存储层\nkv_store.c\n(namespace users)" as KV
+database "SQLite\nusers 表" as DB
+
+U -> UI : 输入用户名/密码并提交
+UI -> API : API.login(username, password)
+API -> RD : POST /api/v1/auth/login\n{"username","password"}
+RD -> CL : 匹配 url+method 后调用
+
+CL -> CL : cJSON_Parse 解析请求体
+opt 请求体为空/JSON非法/缺字段
+  CL --> API : 400 {"error":"缺少 username 或 password"}
+end
+
+CL -> KV : db_query_password_hash(username)\n= kv_get("users", username, "password_hash")
+KV -> DB : SELECT value FROM users\nWHERE key_name=? AND value_name=?
+DB --> KV : 存储的哈希 或 无记录
+KV --> CL : stored_hash 或 NULL
+
+alt 用户不存在 或 SHA-256(salt‖pw) 不匹配
+  CL --> API : 401 {"error":"用户名或密码错误"}\n（不区分原因，防枚举）
+  API --> UI : 抛错
+  UI --> U : 登录页显示错误提示
+else 校验通过
+  CL -> KV : db_query_user_by_username(username)\n= kv_get_all("users", username)
+  KV --> CL : {id, username, name, role}
+  CL -> SESS : session_create(user_id, role, name)
+  SESS -> SESS : OpenSSL RAND_bytes 生成 64 位十六进制 token\nexpires_at = now + 86400\n每16次创建触发一次 session_cleanup()
+  alt 会话槽耗尽且清理后仍不足 / 随机源失败
+    SESS --> CL : NULL
+    CL --> API : 500 {"error":"创建会话失败"}
+  else 创建成功
+    SESS --> CL : token
+    CL --> API : 200 {"token", "user":{id,username,name,role}}
+    API -> API : setAuth(token, user)\nlocalStorage（file:// 下降级内存）
+    API --> UI : 返回登录结果
+    UI --> U : 跳转 #questions 题目列表页
+  end
+end
+
+== 附：注册（POST /api/v1/auth/register，201 后自动登录） ==
+U -> UI : 注册页填写（前端仅开放 student/teacher）
+UI -> API : API.register(username, password, confirm, role)
+API -> RD : POST /api/v1/auth/register
+RD -> CL : handle_register
+CL -> CL : 校验：用户名非空、两次密码一致、\n≥8位且含字母和数字、role∈{student,teacher,admin}
+opt 校验失败
+  CL --> API : 400（对应错误文案）
+end
+CL -> KV : db_create_user(db, username, hash, role)
+alt 用户名已存在
+  CL --> API : 409 {"error":"用户名已存在"}
+else 创建成功
+  CL -> SESS : session_create(...)（与登录同一控制流）
+  CL --> API : 201 {"token","user"}（注册即登录）
+end
+@enduml

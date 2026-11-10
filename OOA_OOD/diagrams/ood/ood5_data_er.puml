@@ -1,0 +1,138 @@
+@startuml ood5_data_er
+' OOD-图5：数据管理设计——数据库逻辑结构（已实现表 + 建议设计表）
+' 依据：server/src/kv_store.c(ensure_table)、db.c(db_init/seed)、ai_access.c(ai_access_init)、
+'       teacher_api.c(teacher_api_init)；建议设计表来源 SRS F-07/F-11 等，标注为建议
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam class {
+  BackgroundColor<<SQLite表>> #E3F2FD
+  BorderColor<<SQLite表>> #1565C0
+  BackgroundColor<<建议设计>> #FFF3E0
+  BorderColor<<建议设计>> #E65100
+}
+
+class "users\n(kv namespace=users)" as TUsers <<SQLite表>> {
+  key_name : TEXT «用户名»
+  value_name : TEXT «id/username/name/role/password_hash»
+  value : TEXT
+  created_at / updated_at : TEXT
+  --
+  PK (key_name, value_name)
+}
+class "qdata\n(kv namespace=qdata)" as TQ <<SQLite表>> {
+  key_name : TEXT «题目id字符串»
+  value_name : TEXT «content/options/answer/analysis/
+type/knowledge_points/seed_key/
+teacher_id/status»
+  value : TEXT
+  created_at / updated_at : TEXT
+  --
+  PK (key_name, value_name)
+}
+class "kv_tables\n(元信息)" as TKv <<SQLite表>> {
+  namespace : TEXT
+  created_at : TEXT
+  --
+  PK (namespace)
+}
+class "questions\n(遗留骨架表)" as TLegacy <<SQLite表>> {
+  id : INTEGER PK AUTOINCREMENT
+  teacher_id / content / answer /
+  analysis / tags / status / created_at
+  --
+  db_init 创建但业务未使用
+  （题目实际存 qdata）
+}
+class "teacher_ai_credentials" as TCred <<SQLite表>> {
+  teacher_id : INTEGER PK
+  owner_key : TEXT NOT NULL
+  model : TEXT NOT NULL
+  secret : BLOB «AES-256-GCM»
+  masked_key : TEXT NOT NULL
+  enabled : INTEGER CHECK(0,1)
+  version : INTEGER CHECK(>0)
+  updated_at : INTEGER
+}
+class "teacher_ai_usage" as TUsage <<SQLite表>> {
+  student_id : INTEGER
+  teacher_id : INTEGER
+  day : INTEGER «上海自然日»
+  used : INTEGER CHECK(>=0)
+  --
+  PK (student_id, teacher_id, day)
+}
+class "teacher_ai_charges" as TCharge <<SQLite表>> {
+  id : INTEGER PK AUTOINCREMENT
+  student_id / teacher_id / day
+  released : INTEGER DEFAULT 0 CHECK(0,1)
+  created_at : INTEGER
+}
+class "teacher_ai_audit" as TAudit <<SQLite表>> {
+  id : INTEGER PK AUTOINCREMENT
+  teacher_id / version
+  action : TEXT «configure_or_enable|disable»
+  created_at : INTEGER
+}
+class "ai_access_grants\n(platform 模式)" as TGrant <<SQLite表>> {
+  user_id : INTEGER PK CHECK(1..2147483647)
+  user_key : TEXT NOT NULL
+  enabled : INTEGER CHECK(0,1)
+  expires_at : INTEGER NULL
+  updated_at : INTEGER
+}
+class "ai_access_audit\n(platform 模式)" as TGAudit <<SQLite表>> {
+  id : INTEGER PK AUTOINCREMENT
+  user_id / user_key
+  action : CHECK(grant|revoke)
+  expires_at / actor / reason / created_at
+}
+
+TQ "key_name(题目)" ..> "1" TUsers : teacher_id → users.id\n（逻辑外键，无 FK 约束）
+TCred "1" ..> "1" TUsers : teacher_id → users.id\n（identity() 校验角色与唯一性）
+TUsage ..> TUsers : student_id/teacher_id 逻辑外键
+TCharge ..> TUsage : (student,teacher,day) 逻辑关联
+TAudit ..> TCred : teacher_id+version
+TGrant ..> TUsers : user_id+user_key 绑定
+TKv ..> TUsers : 注册 namespace
+TKv ..> TQ : 注册 namespace
+
+package "建议设计表（目标功能，当前不存在）" {
+  class "exams 试卷" as XExam <<建议设计>> {
+    id PK / name / description /
+    teacher_id / status / created_at
+  }
+  class "exam_questions 试卷题目" as XEQ <<建议设计>> {
+    exam_id / question_id / order_no / score
+    -- PK(exam_id, question_id)
+  }
+  class "submissions 学生提交" as XSub <<建议设计>> {
+    id PK / student_id / content /
+    status(pending/approved/rejected) /
+    reviewer_id / review_comment
+  }
+  class "conversation_nodes 讨论树节点" as XNode <<建议设计>> {
+    id PK / question_id / parent_id NULL /
+    user_id / content / role / created_at
+  }
+  class "audit_logs 通用审计" as XAudit <<建议设计>> {
+    id PK / user_id / action / target /
+    detail / ip / created_at
+  }
+}
+XExam "1" *-- "1..*" XEQ
+XEQ "0..*" ..> "1" TQ : question_id
+XSub ..> TUsers : student_id
+XNode ..> TQ : question_id
+XNode "0..*" -- "0..1" XNode : parent_id 自关联(Fork)
+
+note bottom of TUsers
+  内存态数据（不入 SQLite）：
+  Session(auth.c)、Pi 的 Job/Conversation(jobs.ts)
+  ——重启即失效，属设计约束而非缺陷
+end note
+note right of XExam
+  建议设计仅服务于目标功能
+  （试卷/提交审核/讨论树/通用审计），
+  落地时需配套迁移与索引策略
+end note
+@enduml

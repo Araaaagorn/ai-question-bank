@@ -1,0 +1,148 @@
+@startuml cls3_bce
+' AI+题库智能教学平台 — 类图3：边界(Boundary)-控制(Control)-实体(Entity) 总览
+' 依据：web/js/*.js（边界）、server/src/routes.c+teacher_api_routes.c+http_server.c（控制）、
+'       server/src/auth.c+teacher_api.c+ai_access.c+ai_client.c+kv_store.c（控制/实体服务）、
+'       ai-service/src/server.ts+jobs.ts（Pi 控制）
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam class {
+  BackgroundColor<<边界类>> #E8F5E9
+  BorderColor<<边界类>> #2E7D32
+  BackgroundColor<<控制类>> #F3E5F5
+  BorderColor<<控制类>> #6A1B9A
+  BackgroundColor<<实体类>> #E3F2FD
+  BorderColor<<实体类>> #1565C0
+}
+
+package "边界类 Boundary（web/ 静态前端）" {
+  class "登录页 AuthPage" as BLogin <<边界类>> {
+    +show() / handleLogin(e)
+  }
+  class "注册页 RegisterPage" as BReg <<边界类>> {
+    +show() / handleRegister(e)
+  }
+  class "题目列表页 QuestionsPage" as BQ <<边界类>> {
+    +show() / reload()
+    -renderQuestions(questions)
+  }
+  class "对话页 ChatPage" as BC <<边界类>> {
+    +show(questionId)
+    +sendMessage() / cancel()
+    +onModeChange() / resetConversations()
+    -refreshAiAccess(silent)
+    -conversations : Map<"题目:模式", conversation_id>
+  }
+  class "API客户端封装 API" as BApi <<边界类>> {
+    +login/register/logout/me
+    +questions / questionDetail(id)
+    +aiAccess() / chat(opts)
+    -withFallback(real, mock) «离线/未实现回退»
+  }
+  class "Pi任务客户端 PiChatClient" as BPi <<边界类>> {
+    +sendPiChat(opts) «POST+800ms轮询+DELETE取消»
+    +getPiAiAccess(opts)
+  }
+}
+
+package "控制类 Control（server/ C11 后端）" {
+  class "HTTP服务 HttpServer" as CHttp <<控制类>> {
+    +http_server_start(cfg) : int «MHD单轮询线程»
+    -request_handler(...) «请求体累积≤64KiB»
+  }
+  class "路由分发器 RouteDispatcher" as CRd <<控制类>> {
+    +route_dispatch(conn, url, method, body, len, cfg)
+  }
+  class "认证控制器 AuthController" as CAuth <<控制类>> {
+    +handle_register / handle_login
+    +handle_logout / handle_me
+  }
+  class "题目控制器 QuestionController" as CQ <<控制类>> {
+    +handle_questions(conn,url,method,body,cfg)
+    -handle_question_create/update/delete
+    -extract_question_fields(...) : int
+    -kv_to_question(key, db) : cJSON*
+  }
+  class "对话代理控制器 ChatProxyController" as CChat <<控制类>> {
+    +handle_chat(conn,url,method,body,cfg)
+    -chat_fields_valid(root) : int
+    -chat_uuid_valid(v) : int
+  }
+  class "教师API路由 TeacherApiRoutes" as CTar <<控制类>> {
+    +teacher_api_route(conn,url,method,body,len,cfg)
+  }
+  class "AI客户端 AiClient" as CAi <<控制类>> {
+    +ai_service_request(cfg, method, path, user_id, body, out) : int
+  }
+  class "静态文件服务 StaticFileServer" as CStatic <<控制类>> {
+    +serve_static(conn, url, cfg) «路径穿越防护»
+  }
+}
+
+package "控制类 Control（ai-service/ Pi 内部服务）" {
+  class "内部接口 InternalJobApi" as PApi <<控制类>> {
+    +createApp(config) «/internal/v1/jobs POST/GET/DELETE»
+    -authenticated(req, token) «timingSafeEqual»
+  }
+  class "任务队列 Jobs" as PJobs <<控制类>> {
+    +submit/get/cancel
+  }
+}
+
+package "实体服务与数据访问（server/）" {
+  class "会话管理 SessionManager" as ESession <<实体类>> {
+    见 cls1：Session
+  }
+  class "教师API服务 TeacherApiService" as ETApi <<实体类>> {
+    见 cls2：TeacherApiConfig 操作
+  }
+  class "平台授权服务 AiAccessService" as EAcc <<实体类>> {
+    见 cls2：AiAccessGrant 查询
+  }
+  class "KV存储层 KvStore" as EKv <<实体类>> {
+    +kv_init / kv_set / kv_get / kv_get_all
+    +kv_delete / kv_delete_key / kv_list_keys
+    +kv_file_open(...) «引用模式大文件»
+  }
+  database "SQLite 数据库" as DB {
+  }
+}
+
+BLogin --> BApi
+BReg --> BApi
+BQ --> BApi
+BC --> BApi
+BC --> BPi
+BApi --> BPi : chat() 委托
+
+BApi ..> CRd : HTTP/JSON\n/api/v1/*
+BPi ..> CRd
+
+CHttp --> CRd : 请求分发
+CRd --> CAuth
+CRd --> CQ
+CRd --> CChat
+CRd --> CTar
+CRd ..> CStatic : 非 /api 路径
+CQ --> EKv : qdata 读写
+CAuth --> EKv : users 读写
+CAuth --> ESession
+CChat --> ESession : 会话校验
+CChat --> ETApi : 归属/额度/解密
+CChat --> CAi : 内部HTTP转发
+CTar --> ETApi
+CAi ..> PApi : 内部HTTP\nBearer AI_SERVICE_TOKEN\n+ X-User-Id
+PApi --> PJobs
+EKv --> DB
+ETApi --> DB
+EAcc --> DB
+
+note bottom of CRd
+  无路由表：按 url+method 顺序匹配；
+  teacher 模式下 /teacher/ai-api 与
+  /ai/access 优先转交 teacher_api_route
+end note
+note right of PJobs
+  Jobs/Conversation/ChatJob 实体
+  定义见 cls2_ai.puml
+end note
+@enduml

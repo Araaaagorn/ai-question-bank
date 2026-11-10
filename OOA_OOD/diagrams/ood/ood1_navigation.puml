@@ -1,0 +1,53 @@
+@startuml ood1_navigation
+' OOD-图1：系统功能导航结构（人机交互设计）
+' 依据：web/index.html（四个页面容器+顶部导航栏）、web/js/app.js（hash 路由 route()）
+' 橙色为建议新增页面（目标设计，当前无代码）
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam component {
+  BackgroundColor<<建议新增>> #FFF3E0
+  BorderColor<<建议新增>> #E65100
+}
+
+package "浏览器 SPA（web/index.html，hash 路由，无构建链）" {
+  component "顶部导航栏\n用户信息 + 退出按钮\n(navbar)" as Nav
+  component "登录页\n#login\n(page-login)" as L
+  component "注册页\n#register\n(page-register)" as R
+  component "题目列表页\n#questions\n(page-questions)" as Q
+  component "题目详情 + AI 对话页\n#chat/{id}\n(page-chat)" as C
+}
+
+package "建议新增页面（目标设计，未实现）" {
+  component "题库管理页（教师）\n题目增删改入口" as X1 <<建议新增>>
+  component "教师 AI-API 配置页\nGET/PUT/PATCH /teacher/ai-api" as X2 <<建议新增>>
+  component "试卷管理页（教师）" as X3 <<建议新增>>
+  component "管理后台（管理员）\n用户/审计/备份" as X4 <<建议新增>>
+  component "个人中心（学生）\n学习记录/额度/历史" as X5 <<建议新增>>
+}
+
+L --> R : "还没有账号？立即注册"
+R --> L : "已有账号？返回登录"
+L --> Q : 登录成功 navigate('#questions')
+R --> Q : 注册成功自动登录
+Q --> C : 点击题目卡片\nnavigate('#chat/'+id)
+C --> Q : "← 返回列表"
+Nav --> L : 退出：清本地状态+\n清空会话映射+POST logout
+Q ..> X1 : 建议入口（教师角色可见）
+Nav ..> X2 : 建议入口（教师角色可见）
+Q ..> X3 : 建议入口（教师角色可见）
+Nav ..> X4 : 建议入口（管理员可见）
+Nav ..> X5 : 建议入口（学生可见）
+
+note bottom of C
+  页面内分区：题目详情（含"查看答案与解析"折叠）、
+  消息区、AI 权限状态横幅、输入栏
+  （模式选择 solve/hint/review + 问题输入 +
+  review 作答输入 + 发送/取消按钮）
+end note
+
+note bottom of X2
+  后端接口已就绪（docs/teacher-api.md v1.3），
+  README 明确"本次没有改 web 业务页面"；
+  当前只能经接口工具配置教师 API
+end note
+@enduml

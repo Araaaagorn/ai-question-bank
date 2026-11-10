@@ -1,0 +1,69 @@
+@startuml seq2_question_manage
+' 顺序图2：教师创建与管理题目（CRUD）
+' 依据：server/src/routes.c（handle_questions / handle_question_create / _update / _delete、
+'       extract_question_fields、next_question_id、kv_to_question）、server/src/kv_store.c
+' 说明：web/ 未提供题目管理页面，当前由接口工具或后续前端调用同一组 HTTP 接口
+autonumber
+skinparam shadowing false
+
+actor "教师\n(或管理员)" as T
+boundary "客户端\n(接口工具/未来管理页)" as CLI
+control "路由分发器\nroute_dispatch" as RD
+control "题目控制器\nhandle_questions\n(routes.c)" as QC
+entity "会话管理\nauth.c" as SESS
+entity "KV存储层\nkv_store.c\n(namespace qdata)" as KV
+database "SQLite\nqdata 表" as DB
+
+T -> CLI : 构造题目 JSON 并发起请求
+CLI -> RD : POST /api/v1/questions\nAuthorization: Bearer <token>
+RD -> QC : handle_questions(...)
+
+QC -> SESS : session_validate(extract_bearer_token(header))
+alt 未登录 / token 过期
+  QC --> CLI : 401 {"error":"未登录或 token 已过期"}
+end
+QC -> QC : 写操作角色检查：role ∈ {teacher, admin}
+alt 学生或其他角色
+  QC --> CLI : 403 {"error":"仅教师或管理员可执行此操作"}\n（权限检查先于题目存在性校验）
+end
+
+== 新增（POST /api/v1/questions） ==
+QC -> QC : cJSON_Parse + extract_question_fields：\ncontent 非空；type∈{single_choice,short_answer}；\nanswer 非空；single_choice 选项非空且 answer∈labels；\nshort_answer 选项必须为空数组；knowledge_points 为字符串数组
+opt 字段校验失败
+  QC --> CLI : 400 {"error":"<具体字段原因>"}
+end
+QC -> KV : next_question_id：kv_list_keys("qdata") 取最大数字 id+1
+QC -> KV : kv_set×8：content/options/answer/analysis/\ntype/knowledge_points/teacher_id=会话user_id/status=active
+KV -> DB : INSERT OR REPLACE INTO qdata ...
+QC -> KV : kv_to_question(key) 回读组装题目对象
+QC --> CLI : 201 {"question":{...}}
+CLI --> T : 展示创建结果
+
+== 修改（PUT /api/v1/questions/{id}，部分更新） ==
+CLI -> RD : PUT /api/v1/questions/{id}
+RD -> QC : handle_question_update
+QC -> QC : parse_question_id：非正整数/溢出/多余路径段 → 404
+QC -> KV : kv_to_question(id) 读旧题
+alt 题目不存在
+  QC --> CLI : 404 {"error":"question not found"}
+end
+QC -> QC : 旧题与请求体合并（id 不可改；至少含一个可更新字段），\n对合并结果执行与 POST 相同的整体校验
+opt 校验失败
+  QC --> CLI : 400
+end
+QC -> KV : kv_set 覆盖被更新字段
+QC --> CLI : 200 {"question":{...}}
+
+== 删除（DELETE /api/v1/questions/{id}，物理删除） ==
+CLI -> RD : DELETE /api/v1/questions/{id}
+RD -> QC : handle_question_delete
+QC -> KV : kv_delete_key("qdata", key)
+KV -> DB : DELETE FROM qdata WHERE key_name=?
+QC --> CLI : 200 {"status":"ok"}
+
+note over QC, DB
+  读取链路（GET 列表/详情）对所有登录角色开放：
+  列表遍历 qdata 全部 key 组装，无分页/检索；
+  数据库文件缺失时返回 500 而非空列表
+end note
+@enduml

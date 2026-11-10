@@ -1,0 +1,65 @@
+@startuml seq5_teacher_api_config
+' 顺序图5：教师配置/启停自己的 AI API（v1.3，默认 teacher 模式）
+' 依据：server/src/teacher_api_routes.c、teacher_api.c（AES-256-GCM 加解密、审计、版本）、
+'       docs/teacher-api.md；说明：web/ 无管理页面，当前经接口工具调用
+autonumber
+skinparam shadowing false
+
+actor "教师" as T
+boundary "客户端\n(接口工具/未来配置页)" as CLI
+control "教师API路由\nteacher_api_route\n(teacher_api_routes.c)" as TR
+entity "会话管理\nauth.c" as SESS
+entity "教师API服务\nteacher_api.c" as TA
+database "SQLite\nteacher_ai_credentials\nteacher_ai_audit" as DB
+
+T -> CLI : 提交 API Key（可选 model）
+CLI -> TR : PUT /api/v1/teacher/ai-api\n{"api_key","model"?}\nAuthorization: Bearer <token>
+TR -> SESS : session_validate(token)
+alt 会话无效
+  TR --> CLI : 401 UNAUTHORIZED
+end
+TR -> TR : role == teacher 检查
+alt student / admin
+  TR --> CLI : 403 TEACHER_REQUIRED
+end
+TR -> TR : Content-Type 检查(415)；parse() 严格白名单\n（仅 api_key/model，拒绝重复字段与 NUL 转义）(400)
+TR -> TA : teacher_api_save(cfg, teacher_id, key, model?, 1)
+
+TA -> TA : valid_key：16–512 可打印 ASCII\nvalid_model：≤128 且字符集受限
+opt 非法
+  TA --> TR : INVALID_REQUEST
+  TR --> CLI : 400
+end
+
+TA -> DB : BEGIN IMMEDIATE
+TA -> DB : identity()：按 id+role 从 users 解析唯一账号键 owner
+TA -> DB : load()：读取既有 Slot（owner/model/secret/enabled/version）
+TA -> TA : version+1；masked_key = "****"+末4位\nAES-256-GCM 加密：12B 随机 nonce + 密文 + 16B tag\nAAD = teacher-api-v1:{teacherId}:{owner}:{version}:{model}\n主密钥来自 AI_KEY_ENCRYPTION_KEY（仅环境变量）
+TA -> DB : UPSERT teacher_ai_credentials\n(owner_key, model, secret, masked_key, enabled, version, unixepoch())
+TA -> DB : INSERT teacher_ai_audit(action=configure_or_enable)
+TA -> DB : COMMIT（失败则 ROLLBACK 全量回滚）
+TA -> TA : OPENSSL_cleanse 擦除明文 Key 与 Slot
+TA --> TR : NULL（成功）
+TR -> TA : teacher_api_metadata(teacher_id)
+TA --> TR : {configured, enabled, provider:"deepseek", model,\nmasked_key, version, updated_at}
+TR --> CLI : 200 {"api":{...}}（绝不回显完整 Key 或密文）
+CLI --> T : 展示脱敏配置；清空本地密钥输入框
+
+== 启停（PATCH /api/v1/teacher/ai-api {"enabled":bool}） ==
+CLI -> TR : PATCH（字段白名单仅 enabled）
+TR -> TA : teacher_api_toggle(cfg, teacher_id, enabled)
+TA -> TA : 解密原 Key（crypt decrypt）→ 调 teacher_api_save 重存\n（version+1，audit action=disable/configure_or_enable）
+alt 配置不存在
+  TA --> TR : AI_API_NOT_CONFIGURED
+  TR --> CLI : 404
+end
+TA --> TR : NULL
+TR --> CLI : 200 {"api":{...}}
+
+note over TA, DB
+  停用后：学生新提交 → 403 AI_API_DISABLED；
+  已受理任务仍可查询/取消；
+  credentialScope 变化使旧对话追问返回
+  409 AI_CREDENTIAL_CHANGED（需新建对话）
+end note
+@enduml

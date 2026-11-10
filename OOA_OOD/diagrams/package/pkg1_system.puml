@@ -1,0 +1,101 @@
+@startuml pkg1_system
+' 包图1：系统逻辑包与依赖关系
+' 说明：逻辑包按业务职责划分；括号内为实际代码位置。
+'       依赖方向自上而下（接口→控制→服务→存储；异步执行独立成包），无循环依赖。
+' 依据：README.md 目录结构、docs/architecture.md、server/Makefile、ai-service/package.json
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam package {
+  BackgroundColor #FAFAFA
+}
+
+package "前端交互包\nweb/（逻辑包=物理目录）" as PWeb {
+  [页面模块\nauth.js / questions.js / chat.js] as Pages
+  [服务封装\napi.js / pi-chat-client.js] as Wrap
+  Pages --> Wrap : 调用统一 API 客户端
+}
+
+package "接口与路由包\nserver/src/routes.c + teacher_api_routes.c（逻辑包）" as PRoute {
+  [路由分发 route_dispatch] as RD
+  [静态文件服务 serve_static] as SS
+  [教师API路由 teacher_api_route] as TAR
+}
+
+package "认证与会话包\nserver/src/auth.c（逻辑包）" as PAuth {
+  [会话管理 Session] as Auth
+}
+
+package "题库业务包\nserver/src/routes.c 题目处理器 + db.c seed（逻辑包）" as PQ {
+  [题目处理器 handle_questions 等] as QH
+  [题目/账号 seed db_seed_*] as Seed
+}
+
+package "AI接入控制包\nserver/src/{ai_access,teacher_api,ai_client}.c（逻辑包）" as PAI {
+  [平台授权查询 ai_access] as Acc
+  [教师API与额度 teacher_api] as TApi
+  [AI内部客户端 ai_client] as AiC
+}
+
+package "数据访问包\nserver/src/{kv_store,db}.c（逻辑包）" as PStore {
+  [KV存储层 kv_store] as KV
+  database "SQLite\ndata/ai_question_bank.db" as DB
+  KV --> DB
+}
+
+package "系统基础设施包\nserver/src/{main,config,http_server}.c + third_party（物理目录）" as PInfra {
+  [装配入口 main.c] as Main
+  [配置加载 config.c] as Cfg
+  [HTTP服务 http_server.c\n(libmicrohttpd)] as Http
+  [cJSON / OpenSSL / libcurl] as Libs
+  Main --> Cfg
+  Main --> Http
+  Http --> RD : 请求回调
+}
+
+package "AI执行服务包\nai-service/（物理目录，独立进程）" as PPi {
+  [内部接口 server.ts] as PS
+  [任务队列 jobs.ts] as JQ
+  [Agent执行 agent.ts] as AG
+  [教学技能 teaching.ts + skills/] as TS
+  [受限数学工具 math-tools.ts] as MT
+  PS --> JQ
+  JQ --> AG
+  AG --> TS
+  AG --> MT
+}
+
+package "运维脚本包\nscripts/（物理目录）" as POps {
+  [授权CLI ai_access.py\n(仅 platform 模式)] as Cli
+  [配置脚本 configure_*.py] as Conf
+}
+
+cloud "AI模型供应商\n(DeepSeek 兼容 API)" as MP
+
+Pages ..> RD : HTTP/JSON\n/api/v1/*（Bearer token）
+RD --> Auth : 会话校验
+RD --> QH : 题目 CRUD
+RD --> TAR : teacher 模式优先转交
+TAR --> TApi
+RD --> Acc : platform 模式授权查询
+RD ..> SS : 非 /api 路径静态托管
+QH --> KV : qdata 读写
+Auth --> KV : users 读写
+Seed --> KV : 启动 seed
+TApi --> DB : teacher_ai_* 事务
+Acc --> DB : ai_access_* 读写
+AiC ..> PS : 内部 HTTP\nBearer AI_SERVICE_TOKEN + X-User-Id
+AG ..> MP : 模型调用（教师Key/平台Key）
+Cli ..> DB : 可信服务器直写 SQLite\n（grant/revoke 同事务+审计）
+
+note bottom of PRoute
+  物理上题目/对话处理器位于 routes.c；
+  逻辑上按业务拆分为"题库业务包"与
+  "AI接入控制包"，与 architecture.md
+  "后续按功能拆 services_*.c" 的约定一致
+end note
+
+note right of PPi
+  Pi 仅监听 127.0.0.1:8001；
+  任务/对话状态仅存内存（TTL 1h）
+end note
+@enduml
