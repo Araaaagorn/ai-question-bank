@@ -208,3 +208,26 @@ body {
   .chat-controls .btn { padding: 8px 12px; }
   .error-box { padding: 10px 12px; }
 }
+
+/* ── Exams ── */
+.exam-sub { font-size: 13px; color: #6b7280; margin-bottom: 6px; }
+.q-tag.status-active { background: #ecfdf5; color: #065f46; }
+.q-tag.status-archived { background: #f3f4f6; color: #6b7280; }
+.exam-meta { font-size: 13px; color: #6b7280; margin: 12px 0; }
+.exam-question {
+  background: #fff; border-radius: 10px; padding: 14px 18px; margin-bottom: 12px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+}
+.exam-question-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.exam-pos { font-size: 13px; font-weight: 600; color: #2563eb; }
+.arrange-list { margin: 8px 0 12px; }
+.arrange-item {
+  display: flex; align-items: center; gap: 8px;
+  background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+  padding: 8px 12px; margin-bottom: 8px;
+}
+.arrange-text { flex: 1; font-size: 14px; color: #374151; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.arrange-score { width: 80px; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px; }
+.arrange-actions { display: flex; gap: 4px; }
+.arrange-add { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+.arrange-add select { flex: 1 1 220px; min-width: 160px; }
