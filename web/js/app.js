@@ -12,6 +12,11 @@ function route() {
 
   /* 注册页只在 #register 下显示，其余路由统一隐藏 */
   $('page-register').classList.add('hidden');
+  /* 试卷三页同理，只在对应路由下显示 */
+  ['page-exams', 'page-exam', 'page-exam-form'].forEach((id) => {
+    const el = $(id);
+    if (el) el.classList.add('hidden');
+  });
   if (hash === '#register') {
     RegisterPage.show();
     return;
@@ -40,6 +45,12 @@ function route() {
   } else if (hash.startsWith('#chat/')) {
     const id = hash.split('/')[1];
     ChatPage.show(id);
+  } else if (hash === '#exams') {
+    ExamsPage.show();
+  } else if (hash.startsWith('#exam-form/')) {
+    ExamFormPage.show(hash.split('/').slice(1).join('/'));
+  } else if (hash.startsWith('#exam/')) {
+    ExamViewPage.show(hash.split('/')[1]);
   } else {
     navigate('#questions');
   }
@@ -80,6 +91,69 @@ window.app = {
 
   retryDetail() {
     ChatPage.retryDetail();
+  },
+
+  /* ── 试卷 ── */
+  openExams() {
+    navigate('#exams');
+  },
+
+  reloadExams() {
+    ExamsPage.load();
+  },
+
+  openExam(id) {
+    navigate('#exam/' + id);
+  },
+
+  editExam() {
+    const hash = window.location.hash || '';
+    const id = hash.split('/')[1];
+    if (id) navigate('#exam-form/' + id);
+  },
+
+  reloadExam() {
+    ExamViewPage.load();
+  },
+
+  newExam() {
+    navigate('#exam-form/new');
+  },
+
+  reloadExamForm() {
+    ExamFormPage.load();
+  },
+
+  saveExam(e) {
+    return ExamFormPage.save(e);
+  },
+
+  toggleExamStatus() {
+    return ExamFormPage.toggleStatus();
+  },
+
+  deleteExam() {
+    return ExamFormPage.remove();
+  },
+
+  examAdd() {
+    ExamFormPage.add();
+  },
+
+  examMove(index, delta) {
+    ExamFormPage.move(index, delta);
+  },
+
+  examRemove(index) {
+    ExamFormPage.removeItem(index);
+  },
+
+  examSetScore(index, value) {
+    ExamFormPage.setScore(index, value);
+  },
+
+  saveExamArrange() {
+    return ExamFormPage.saveArrange();
   },
 
   navigate

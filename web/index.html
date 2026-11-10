@@ -12,6 +12,7 @@
     <div class="navbar-inner">
       <span class="navbar-brand">AI+题库</span>
       <span class="navbar-user" id="userInfo"></span>
+      <button class="btn btn-sm" id="examsNavBtn" onclick="app.openExams()">试卷</button>
       <button class="btn btn-sm" id="logoutBtn" onclick="app.logout()">退出</button>
     </div>
   </header>
@@ -139,11 +140,92 @@
     </div>
   </div>
 
+  <!-- ====== 试卷列表页 ====== -->
+  <div id="page-exams" class="page hidden">
+    <div class="container">
+      <div class="chat-header">
+        <button class="btn btn-sm" onclick="app.navigate('#questions')">← 题目列表</button>
+        <h2>试卷</h2>
+        <button class="btn btn-sm btn-primary hidden" id="examsNewBtn" onclick="app.newExam()">新建试卷</button>
+      </div>
+      <div id="examsLoading" class="loading">加载中...</div>
+      <div id="examsError" class="error-box hidden">
+        <span id="examsErrorText"></span>
+        <button class="btn btn-sm btn-secondary" onclick="app.reloadExams()">重试</button>
+      </div>
+      <div id="examsList" class="questions-list"></div>
+    </div>
+  </div>
+
+  <!-- ====== 试卷浏览页 ====== -->
+  <div id="page-exam" class="page hidden">
+    <div class="container">
+      <div class="chat-header">
+        <button class="btn btn-sm" onclick="app.navigate('#exams')">← 试卷列表</button>
+        <h2 id="examTitle">试卷</h2>
+        <button class="btn btn-sm btn-primary hidden" id="examEditBtn" onclick="app.editExam()">编辑</button>
+      </div>
+      <div id="examLoading" class="loading">加载中...</div>
+      <div id="examError" class="error-box hidden">
+        <span id="examErrorText"></span>
+        <button class="btn btn-sm btn-secondary" onclick="app.reloadExam()">重试</button>
+      </div>
+      <p id="examMeta" class="exam-meta"></p>
+      <div id="examQuestions"></div>
+    </div>
+  </div>
+
+  <!-- ====== 试卷编辑页（教师/管理员） ====== -->
+  <div id="page-exam-form" class="page hidden">
+    <div class="container">
+      <div class="chat-header">
+        <button class="btn btn-sm" onclick="app.navigate('#exams')">← 试卷列表</button>
+        <h2 id="examFormTitle">新建试卷</h2>
+      </div>
+      <div id="examFormLoading" class="loading">加载中...</div>
+      <div id="examFormError" class="error-box hidden">
+        <span id="examFormErrorText"></span>
+        <button class="btn btn-sm btn-secondary" onclick="app.reloadExamForm()">重试</button>
+      </div>
+      <form id="examMetaForm" onsubmit="return app.saveExam(event)">
+        <div class="form-group">
+          <label for="examName">名称</label>
+          <input type="text" id="examName" maxlength="100" placeholder="例如：期中数学测验" required />
+        </div>
+        <div class="form-group">
+          <label for="examDescription">描述</label>
+          <input type="text" id="examDescription" maxlength="1000" placeholder="可选，说明覆盖范围" />
+        </div>
+        <div class="form-group">
+          <button type="submit" class="btn btn-primary btn-block" id="examSaveBtn">保存基本信息</button>
+        </div>
+      </form>
+      <p id="examArchiveHint" class="form-hint is-error hidden">试卷已归档，编辑已锁定；点「恢复为进行中」后可继续编辑。</p>
+      <p id="examArrangeHint" class="form-hint hidden">越靠上越先出现；改完顺序与分值后点「保存编排」一次性提交。</p>
+      <div id="examArrangeList" class="arrange-list"></div>
+      <div class="arrange-add">
+        <select id="examAddSelect" class="chat-mode-select"></select>
+        <input type="number" id="examAddScore" class="arrange-score" value="5" min="0.5" max="1000" step="0.5" />
+        <button class="btn btn-sm btn-secondary" id="examAddBtn" onclick="app.examAdd()">添加</button>
+        <button class="btn btn-sm btn-primary" id="examArrangeSaveBtn" onclick="app.saveExamArrange()">保存编排</button>
+      </div>
+      <div class="form-group">
+        <button class="btn btn-secondary btn-block hidden" id="examStatusBtn" onclick="app.toggleExamStatus()">归档试卷</button>
+      </div>
+      <div class="form-group">
+        <button class="btn btn-secondary btn-block hidden" id="examDeleteBtn" onclick="app.deleteExam()">删除试卷</button>
+      </div>
+      <p id="examFormMsg" class="form-hint hidden"></p>
+    </div>
+  </div>
+
   <script src="/js/api.js"></script>
   <script src="/js/auth.js"></script>
   <script src="/js/utils.js"></script>
   <script src="/js/pi-chat-client.js"></script>
   <script src="/js/questions.js"></script>
+  <script src="/js/exams.js"></script>
+  <script src="/js/exam-form.js"></script>
   <script src="/js/chat.js"></script>
   <script src="/js/app.js"></script>
 </body>
