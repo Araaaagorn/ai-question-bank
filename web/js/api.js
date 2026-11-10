@@ -146,6 +146,9 @@ const API = (() => {
    *  当成真实 AI 输出展示。 */
   let chatMocked = false;
 
+  /* 教师 AI API 配置的离线演示状态（仅内存，刷新即失效） */
+  let mockTeacherApi = { configured: false };
+
   /** 统一回退包装：真实请求失败且属于可回退错误时，改用演示数据 */
   async function withFallback(realCall, mockCall, onFallback) {
     if (OFFLINE_PROTOCOL) {
@@ -433,6 +436,54 @@ const API = (() => {
       return withFallback(
         () => request('GET', '/ai/access').then((body) => body.ai_access || {}),
         () => delay(150).then(() => ({ status: 'active', allowed: true, expires_at: null }))
+      );
+    },
+
+    /** 教师 AI API 配置：查询 GET /teacher/ai-api（仅 teacher，student/admin 为 403） */
+    teacherAiApi() {
+      return withFallback(
+        () => request('GET', '/teacher/ai-api').then((body) => body.api || {}),
+        () => delay(200).then(() => Object.assign({}, mockTeacherApi))
+      );
+    },
+
+    /** 保存并启用 PUT /teacher/ai-api（提交即替换并启用，version 递增） */
+    saveTeacherAiApi(payload) {
+      return withFallback(
+        () => request('PUT', '/teacher/ai-api', payload).then((body) => body.api || {}),
+        () => delay(200).then(() => {
+          const key = String(payload.api_key || '');
+          mockTeacherApi = {
+            configured: true,
+            enabled: true,
+            provider: 'deepseek',
+            model: payload.model || 'deepseek-flash',
+            masked_key: '****' + key.slice(-4),
+            version: (mockTeacherApi.version || 0) + 1,
+            updated_at: Math.floor(Date.now() / 1000)
+          };
+          return Object.assign({}, mockTeacherApi);
+        })
+      );
+    },
+
+    /** 启停 PATCH /teacher/ai-api（未配置时后端 404） */
+    setTeacherAiApiEnabled(enabled) {
+      return withFallback(
+        () => request('PATCH', '/teacher/ai-api', { enabled: enabled }).then((body) => body.api || {}),
+        () => delay(150).then(() => {
+          if (!mockTeacherApi.configured) {
+            const err = new Error('尚未配置 AI API');
+            err.status = 404;
+            throw err;
+          }
+          mockTeacherApi = Object.assign({}, mockTeacherApi, {
+            enabled: enabled,
+            version: (mockTeacherApi.version || 0) + 1,
+            updated_at: Math.floor(Date.now() / 1000)
+          });
+          return Object.assign({}, mockTeacherApi);
+        })
       );
     },
 
