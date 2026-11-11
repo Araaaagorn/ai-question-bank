@@ -432,10 +432,15 @@ const API = (() => {
 
     /** 查询 AI 使用权限 GET /ai/access（v1.2）
      * 后端返回 { ai_access: {...} }，这里提取内部对象 */
-    aiAccess() {
+    /** AI 权限预检查 GET /ai/access?question_id=N
+     * teacher 路由模式下 question_id 必填；返回含 status/allowed/reason_code/quota。 */
+    aiAccess(questionId) {
+      const id = questionId === undefined || questionId === null ? undefined : Number(questionId);
       return withFallback(
-        () => request('GET', '/ai/access').then((body) => body.ai_access || {}),
-        () => delay(150).then(() => ({ status: 'active', allowed: true, expires_at: null }))
+        () => PiChatClient.getPiAiAccess({ token: getToken(), questionId: id }),
+        () => delay(150).then(() => ({
+          status: 'active', allowed: true, expires_at: null, reason_code: null, quota: null
+        }))
       );
     },
 
