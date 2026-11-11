@@ -5,25 +5,38 @@
  */
 window.PiChatClient = (() => {
   class PiChatError extends Error {
-    constructor(message, { code = 'NETWORK_ERROR', status = 0, jobId } = {}) {
+    constructor(message, { code = 'NETWORK_ERROR', status = 0, jobId, payload } = {}) {
       super(message);
       this.name = 'PiChatError';
       this.code = code;
       this.status = status;
       this.jobId = jobId;
+      this.payload = payload;
+      /* 供 api.js 的 withFallback 判断是否需要回退到离线演示数据 */
+      this.networkError = code === 'NETWORK_ERROR';
     }
   }
 
   /** 页面预检查；POST 仍会重新核验权限，不能用缓存结果作为授权依据。
+   * teacher 路由模式下 `question_id` 为必填（缺失后端返回 400 QUESTION_REQUIRED），
+   * 响应除 `ai_access` 外还带 `teacher_id`、`reason_code`、`quota`。
    * @param {Object} opts
    * @param {string} opts.token - 登录 token
+   * @param {number} opts.questionId - 当前题目 id（teacher 路由模式必填）
    * @param {string} [opts.baseUrl=''] - 例如 http://localhost:8000，空字符串表示相对路径
    * @param {AbortSignal} [opts.signal]
    */
-  async function getPiAiAccess({ token, baseUrl = '', signal } = {}) {
+  async function getPiAiAccess({ token, questionId, baseUrl = '', signal } = {}) {
+    let query = '';
+    if (questionId !== undefined && questionId !== null) {
+      if (!Number.isInteger(questionId) || questionId <= 0 || questionId > 2147483647) {
+        throw new PiChatError('题目 id 不合法，无法查询 AI 权限', { code: 'INVALID_REQUEST', status: 400 });
+      }
+      query = '?question_id=' + questionId;
+    }
     let response;
     try {
-      response = await fetch(baseUrl.replace(/\/$/, '') + '/api/v1/ai/access', {
+      response = await fetch(baseUrl.replace(/\/$/, '') + '/api/v1/ai/access' + query, {
         headers: { Authorization: 'Bearer ' + token },
         signal,
       });
@@ -37,7 +50,8 @@ window.PiChatClient = (() => {
       throw new PiChatError('权限响应格式不正确', { code: 'INVALID_RESPONSE', status: response.status });
     }
     if (!response.ok) {
-      throw new PiChatError(body.error ?? '查询权限失败', { code: body.code ?? 'HTTP_ERROR', status: response.status });
+      throw new PiChatError(body.error ?? '查询权限失败',
+        { code: body.code ?? 'HTTP_ERROR', status: response.status, payload: body });
     }
     const access = body.ai_access;
     if (!access ||
@@ -46,7 +60,15 @@ window.PiChatClient = (() => {
         !(access.expires_at === null || typeof access.expires_at === 'string')) {
       throw new PiChatError('权限响应格式不正确', { code: 'INVALID_RESPONSE', status: response.status });
     }
-    return access;
+    /* 统一成扁平结果：页面既要 status/allowed，也要 reason_code 与 quota */
+    return {
+      allowed: access.allowed,
+      status: access.status,
+      expires_at: access.expires_at,
+      teacher_id: body.teacher_id,
+      reason_code: body.reason_code,
+      quota: body.quota,
+    };
   }
 
   /** 提交 AI 任务并轮询直到完成/失败/取消/超时。
@@ -102,7 +124,8 @@ window.PiChatClient = (() => {
         throw new PiChatError('后端响应格式不正确', { code: 'INVALID_RESPONSE', status: response.status, jobId });
       }
       if (!response.ok) {
-        throw new PiChatError(result.error ?? '请求失败', { code: result.code ?? 'HTTP_ERROR', status: response.status, jobId });
+        throw new PiChatError(result.error ?? '请求失败',
+          { code: result.code ?? 'HTTP_ERROR', status: response.status, jobId, payload: result });
       }
       return result;
     }
