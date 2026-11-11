@@ -23,6 +23,7 @@
 #include "config.h"
 #include "db.h"
 #include "kv_store.h"
+#include "exams.h"
 #include "routes.h"
 
 /* ── 密码哈希（与 db.c 保持一致的算法和 salt） ── */
@@ -454,17 +455,18 @@ static cJSON *kv_to_question(const char *key, sqlite3 *db) {
 
 /* ── 题目写操作辅助 ── */
 
-/* 解析 /api/v1/questions/{id} 的题目 id。
- * 成功返回正数；失败返回 0（已向 conn 发送 404 响应）。 */
-static long long parse_question_id(struct MHD_Connection *conn, const char *url) {
-    const char *id_text = url + sizeof("/api/v1/questions/") - 1;
+/* 解析 /{prefix}{id} 的 id。
+ * 成功返回正数；失败返回 0（已向 conn 发送 404 响应，body 为 not_found_json）。 */
+static long long parse_path_id(struct MHD_Connection *conn, const char *url,
+                               const char *prefix, const char *not_found_json) {
+    const char *id_text = url + strlen(prefix);
     if (*id_text == '\0') {
-        reply_json(conn, MHD_HTTP_NOT_FOUND, "{\"error\":\"question not found\"}");
+        reply_json(conn, MHD_HTTP_NOT_FOUND, not_found_json);
         return 0;
     }
     for (const char *p = id_text; *p != '\0'; p++) {
         if (*p < '0' || *p > '9') {
-            reply_json(conn, MHD_HTTP_NOT_FOUND, "{\"error\":\"question not found\"}");
+            reply_json(conn, MHD_HTTP_NOT_FOUND, not_found_json);
             return 0;
         }
     }
@@ -472,7 +474,7 @@ static long long parse_question_id(struct MHD_Connection *conn, const char *url)
     char *end = NULL;
     long long id = strtoll(id_text, &end, 10);
     if (errno == ERANGE || end == id_text || *end != '\0' || id <= 0) {
-        reply_json(conn, MHD_HTTP_NOT_FOUND, "{\"error\":\"question not found\"}");
+        reply_json(conn, MHD_HTTP_NOT_FOUND, not_found_json);
         return 0;
     }
     return id;
@@ -708,7 +710,8 @@ static enum MHD_Result handle_question_update(struct MHD_Connection *conn,
                                               const char *url, const char *body,
                                               size_t body_len, const AppConfig *cfg) {
     (void)body_len;
-    long long id = parse_question_id(conn, url);
+    long long id = parse_path_id(conn, url, "/api/v1/questions/",
+                                 "{\"error\":\"question not found\"}");
     if (id == 0) return MHD_YES;
 
     char key[32];
@@ -810,7 +813,8 @@ static enum MHD_Result handle_question_update(struct MHD_Connection *conn,
 static enum MHD_Result handle_question_delete(struct MHD_Connection *conn,
                                               const char *url,
                                               const AppConfig *cfg) {
-    long long id = parse_question_id(conn, url);
+    long long id = parse_path_id(conn, url, "/api/v1/questions/",
+                                 "{\"error\":\"question not found\"}");
     if (id == 0) return MHD_YES;
 
     char key[32];
@@ -826,6 +830,14 @@ static enum MHD_Result handle_question_delete(struct MHD_Connection *conn,
         return reply_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
                            "delete question failed");
     }
+
+    /* 题目删除联动（docs/exams.md §11，口径 E）：从所有试卷移除该引用并重排 position。
+     * 题目已删除成功，试卷侧清理失败只是可修复的最终一致数据，
+     * 不回滚为 500，只记录固定分类日志（不含用户内容）。 */
+    if (exams_purge_question(cfg->db, (int)id) != EXAMS_OK) {
+        fprintf(stderr, "[exams] purge_question_failed (question_id=%d)\n", (int)id);
+    }
+
     return reply_json(conn, MHD_HTTP_OK, "{\"status\":\"ok\"}");
 }
 
@@ -880,7 +892,8 @@ static enum MHD_Result handle_questions(struct MHD_Connection *conn,
             return ret;
         } else {
             /* 单题查询 */
-            long long id = parse_question_id(conn, url);
+            long long id = parse_path_id(conn, url, "/api/v1/questions/",
+                                 "{\"error\":\"question not found\"}");
             if (id == 0) return MHD_YES;
 
             char key[32];
@@ -929,6 +942,472 @@ static enum MHD_Result handle_questions(struct MHD_Connection *conn,
     return ret;
 }
 
+
+/* ── 试卷接口（F03）：读、创建、元数据写、状态切换 ── */
+
+static unsigned int exams_http_status(ExamsError error) {
+    switch (error) {
+        case EXAMS_NOT_FOUND: return MHD_HTTP_NOT_FOUND;
+        case EXAMS_INVALID_REQUEST:
+        case EXAMS_INVALID_LAYOUT:
+        case EXAMS_INVALID_QUESTION: return MHD_HTTP_BAD_REQUEST;
+        case EXAMS_ARCHIVED: return MHD_HTTP_CONFLICT;
+        case EXAMS_STORE_FAILED: return MHD_HTTP_INTERNAL_SERVER_ERROR;
+        default: return MHD_HTTP_INTERNAL_SERVER_ERROR;
+    }
+}
+
+static const char *exams_code_of(ExamsError error) {
+    switch (error) {
+        case EXAMS_NOT_FOUND: return "EXAM_NOT_FOUND";
+        case EXAMS_INVALID_REQUEST: return "EXAM_INVALID_REQUEST";
+        case EXAMS_INVALID_LAYOUT: return "EXAM_INVALID_LAYOUT";
+        case EXAMS_INVALID_QUESTION: return "EXAM_INVALID_QUESTION";
+        case EXAMS_ARCHIVED: return "EXAM_ARCHIVED";
+        case EXAMS_STORE_FAILED: return "EXAM_STORE_FAILED";
+        default: return "EXAM_STORE_FAILED";
+    }
+}
+
+static enum MHD_Result reply_exam_error(struct MHD_Connection *conn,
+                                        unsigned int status, const char *code,
+                                        const char *message) {
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL ||
+        cJSON_AddStringToObject(root, "error", message) == NULL ||
+        cJSON_AddStringToObject(root, "code", code) == NULL) {
+        cJSON_Delete(root);
+        return reply_json(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                          "{\"error\":\"服务器内部错误\",\"code\":\"INTERNAL_ERROR\"}");
+    }
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json == NULL)
+        return reply_json(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                          "{\"error\":\"服务器内部错误\",\"code\":\"INTERNAL_ERROR\"}");
+    enum MHD_Result ret = reply_json(conn, status, json);
+    cJSON_free(json);
+    return ret;
+}
+
+static enum MHD_Result reply_exam_not_allowed(struct MHD_Connection *conn,
+                                              const char *allow) {
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL ||
+        cJSON_AddStringToObject(root, "error", "请求方法不支持") == NULL ||
+        cJSON_AddStringToObject(root, "code", "METHOD_NOT_ALLOWED") == NULL) {
+        cJSON_Delete(root);
+        return reply_json(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                          "{\"error\":\"服务器内部错误\",\"code\":\"INTERNAL_ERROR\"}");
+    }
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json == NULL) return MHD_NO;
+    struct MHD_Response *resp = MHD_create_response_from_buffer(
+        strlen(json), json, MHD_RESPMEM_MUST_COPY);
+    cJSON_free(json);
+    if (resp == NULL) return MHD_NO;
+    MHD_add_response_header(resp, "Content-Type", "application/json; charset=utf-8");
+    MHD_add_response_header(resp, "Allow", allow);
+    MHD_add_response_header(resp, "Cache-Control", "no-store");
+    enum MHD_Result ret = MHD_queue_response(conn, MHD_HTTP_METHOD_NOT_ALLOWED, resp);
+    MHD_destroy_response(resp);
+    return ret;
+}
+
+/* 解析请求体为 JSON 对象，且字段都在 allowed 内；失败返回 NULL（已回复 400）。 */
+static cJSON *exams_parse_body(struct MHD_Connection *conn, const char *body,
+                               size_t body_len, const char **allowed,
+                               size_t allowed_count) {
+    (void)body_len;
+    if (body == NULL || body[0] == '\0') {
+        reply_exam_error(conn, MHD_HTTP_BAD_REQUEST, "EXAM_INVALID_REQUEST",
+                         "请求体为空");
+        return NULL;
+    }
+    cJSON *root = cJSON_Parse(body);
+    if (root == NULL || !cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        reply_exam_error(conn, MHD_HTTP_BAD_REQUEST, "EXAM_INVALID_REQUEST",
+                         "JSON 解析失败");
+        return NULL;
+    }
+    for (cJSON *item = root->child; item != NULL; item = item->next) {
+        int ok = 0;
+        for (size_t i = 0; i < allowed_count; i++) {
+            if (strcmp(item->string, allowed[i]) == 0) { ok = 1; break; }
+        }
+        if (!ok) {
+            cJSON_Delete(root);
+            reply_exam_error(conn, MHD_HTTP_BAD_REQUEST, "EXAM_INVALID_REQUEST",
+                             "请求包含不允许的字段");
+            return NULL;
+        }
+    }
+    return root;
+}
+
+/* 读取并返回 {"exam":{...}}。 */
+static enum MHD_Result respond_exam_detail(struct MHD_Connection *conn,
+                                           int exam_id, const AppConfig *cfg,
+                                           unsigned int status) {
+    cJSON *detail = NULL;
+    if (exams_get(cfg->db, exam_id, &detail) != EXAMS_OK) {
+        return reply_exam_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                                "EXAM_STORE_FAILED", "读取试卷失败");
+    }
+    cJSON *resp = cJSON_CreateObject();
+    if (resp == NULL || cJSON_AddItemToObject(resp, "exam", detail) == 0) {
+        cJSON_Delete(resp);
+        cJSON_Delete(detail);
+        return reply_exam_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                                "EXAM_STORE_FAILED", "读取试卷失败");
+    }
+    char *json = cJSON_PrintUnformatted(resp);
+    cJSON_Delete(resp);
+    enum MHD_Result ret = reply_json(conn, status, json);
+    cJSON_free(json);
+    return ret;
+}
+
+/* 返回试卷创建者 user_id；不存在返回 -1。 */
+static int exam_owner(sqlite3 *db, int exam_id) {
+    cJSON *detail = NULL;
+    if (exams_get(db, exam_id, &detail) != EXAMS_OK) return -1;
+    cJSON *teacher = cJSON_GetObjectItem(detail, "teacher_id");
+    int owner = cJSON_IsNumber(teacher) ? teacher->valueint : 0;
+    cJSON_Delete(detail);
+    return owner;
+}
+
+/* 处理 /api/v1/exams/{id}（无 /questions 后缀）。 */
+static enum MHD_Result handle_exam_item(struct MHD_Connection *conn, int exam_id,
+                                        const char *method, const char *body,
+                                        size_t body_len, const AppConfig *cfg,
+                                        const Session *s) {
+    if (strcmp(method, "GET") == 0) {
+        cJSON *detail = NULL;
+        if (exams_get(cfg->db, exam_id, &detail) != EXAMS_OK) {
+            return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
+                                    "exam not found");
+        }
+        int visible = (strcmp(s->role, "admin") == 0);
+        if (!visible) {
+            cJSON *teacher = cJSON_GetObjectItem(detail, "teacher_id");
+            cJSON *status = cJSON_GetObjectItem(detail, "status");
+            if (strcmp(s->role, "teacher") == 0) {
+                visible = cJSON_IsNumber(teacher) && teacher->valueint == s->user_id;
+            } else if (strcmp(s->role, "student") == 0) {
+                visible = cJSON_IsString(status) && strcmp(status->valuestring, "active") == 0;
+            }
+        }
+        cJSON_Delete(detail);
+        if (!visible)
+            return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
+                                    "exam not found");
+        return respond_exam_detail(conn, exam_id, cfg, MHD_HTTP_OK);
+    }
+
+    /* 写操作：角色门槛先于资源存在性（student 一律 403）。 */
+    if (strcmp(s->role, "teacher") != 0 && strcmp(s->role, "admin") != 0) {
+        return reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXAM_FORBIDDEN",
+                                "仅教师或管理员可操作试卷");
+    }
+
+    if (strcmp(method, "DELETE") == 0) {
+        int owner = exam_owner(cfg->db, exam_id);
+        if (owner < 0)
+            return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
+                                    "exam not found");
+        if (strcmp(s->role, "teacher") == 0 && owner != s->user_id)
+            return reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXAM_FORBIDDEN",
+                                    "不能操作他人的试卷");
+        ExamsError err = exams_delete(cfg->db, exam_id);
+        if (err != EXAMS_OK)
+            return reply_exam_error(conn, exams_http_status(err), exams_code_of(err),
+                                    "删除试卷失败");
+        return reply_json(conn, MHD_HTTP_OK, "{\"status\":\"ok\"}");
+    }
+
+    if (strcmp(method, "PUT") == 0) {
+        int owner = exam_owner(cfg->db, exam_id);
+        if (owner < 0)
+            return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
+                                    "exam not found");
+        if (strcmp(s->role, "teacher") == 0 && owner != s->user_id)
+            return reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXAM_FORBIDDEN",
+                                    "不能操作他人的试卷");
+        static const char *allowed[] = { "name", "description" };
+        cJSON *root = exams_parse_body(conn, body, body_len, allowed, 2);
+        if (root == NULL) return MHD_YES;
+        cJSON *name = cJSON_GetObjectItem(root, "name");
+        cJSON *desc = cJSON_GetObjectItem(root, "description");
+        if (name == NULL && desc == NULL) {
+            cJSON_Delete(root);
+            return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST, "EXAM_INVALID_REQUEST",
+                                    "请求体未包含任何可更新字段");
+        }
+        if ((name != NULL && !cJSON_IsString(name)) ||
+            (desc != NULL && !cJSON_IsString(desc))) {
+            cJSON_Delete(root);
+            return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST, "EXAM_INVALID_REQUEST",
+                                    "name/description 字段类型不正确");
+        }
+        ExamsError err = exams_update_meta(cfg->db, exam_id,
+                                           name ? name->valuestring : NULL,
+                                           desc ? desc->valuestring : NULL);
+        cJSON_Delete(root);
+        if (err != EXAMS_OK)
+            return reply_exam_error(conn, exams_http_status(err), exams_code_of(err),
+                                    "修改试卷失败");
+        return respond_exam_detail(conn, exam_id, cfg, MHD_HTTP_OK);
+    }
+
+    if (strcmp(method, "PATCH") == 0) {
+        int owner = exam_owner(cfg->db, exam_id);
+        if (owner < 0)
+            return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
+                                    "exam not found");
+        if (strcmp(s->role, "teacher") == 0 && owner != s->user_id)
+            return reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXAM_FORBIDDEN",
+                                    "不能操作他人的试卷");
+        static const char *allowed[] = { "status" };
+        cJSON *root = exams_parse_body(conn, body, body_len, allowed, 1);
+        if (root == NULL) return MHD_YES;
+        cJSON *status = cJSON_GetObjectItem(root, "status");
+        if (!cJSON_IsString(status)) {
+            cJSON_Delete(root);
+            return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST, "EXAM_INVALID_REQUEST",
+                                    "status 字段类型不正确");
+        }
+        ExamsError err = exams_set_status(cfg->db, exam_id, status->valuestring);
+        cJSON_Delete(root);
+        if (err != EXAMS_OK)
+            return reply_exam_error(conn, exams_http_status(err), exams_code_of(err),
+                                    "切换状态失败");
+        return respond_exam_detail(conn, exam_id, cfg, MHD_HTTP_OK);
+    }
+
+    return reply_exam_not_allowed(conn, "GET, PUT, PATCH, DELETE");
+}
+
+/* 从 text 开头解析正十进制 id，到 '\0' 或 '/' 为止；成功返回 0 并写 *out。 */
+static int parse_leading_id(const char *text, long long *out) {
+    if (text == NULL || *text == '\0') return -1;
+    for (const char *p = text; *p != '\0' && *p != '/'; p++) {
+        if (*p < '0' || *p > '9') return -1;
+    }
+    errno = 0;
+    char *end = NULL;
+    long long id = strtoll(text, &end, 10);
+    if (errno == ERANGE || end == text || id <= 0) return -1;
+    if (*end != '\0' && *end != '/') return -1;
+    *out = id;
+    return 0;
+}
+
+/* 校验当前会话是否为该试卷的写操作主体；不满足时已回复并返回 0。 */
+static int exam_writable(struct MHD_Connection *conn, const AppConfig *cfg,
+                         int exam_id, const Session *s) {
+    if (strcmp(s->role, "teacher") != 0 && strcmp(s->role, "admin") != 0) {
+        reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXAM_FORBIDDEN",
+                         "仅教师或管理员可操作试卷");
+        return 0;
+    }
+    int owner = exam_owner(cfg->db, exam_id);
+    if (owner < 0) {
+        reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND", "exam not found");
+        return 0;
+    }
+    if (strcmp(s->role, "teacher") == 0 && owner != s->user_id) {
+        reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXAM_FORBIDDEN",
+                         "不能操作他人的试卷");
+        return 0;
+    }
+    return 1;
+}
+
+/* /api/v1/exams/{id}/questions：整体替换 / 追加单题 */
+static enum MHD_Result handle_exam_questions(struct MHD_Connection *conn,
+                                             int exam_id, const char *method,
+                                             const char *body, size_t body_len,
+                                             const AppConfig *cfg, const Session *s) {
+    if (!exam_writable(conn, cfg, exam_id, s)) return MHD_YES;
+
+    if (strcmp(method, "PUT") == 0) {
+        static const char *allowed[] = { "questions" };
+        cJSON *root = exams_parse_body(conn, body, body_len, allowed, 1);
+        if (root == NULL) return MHD_YES;
+        cJSON *questions = cJSON_GetObjectItem(root, "questions");
+        if (!cJSON_IsArray(questions)) {
+            cJSON_Delete(root);
+            return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST, "EXAM_INVALID_REQUEST",
+                                    "questions 必须为数组");
+        }
+        ExamsError err = exams_set_questions(cfg->db, exam_id, questions);
+        cJSON_Delete(root);
+        if (err != EXAMS_OK)
+            return reply_exam_error(conn, exams_http_status(err), exams_code_of(err),
+                                    "更新题目编排失败");
+        return respond_exam_detail(conn, exam_id, cfg, MHD_HTTP_OK);
+    }
+
+    if (strcmp(method, "POST") == 0) {
+        static const char *allowed[] = { "question_id", "score" };
+        cJSON *root = exams_parse_body(conn, body, body_len, allowed, 2);
+        if (root == NULL) return MHD_YES;
+        cJSON *qid = cJSON_GetObjectItem(root, "question_id");
+        cJSON *score = cJSON_GetObjectItem(root, "score");
+        if (!cJSON_IsNumber(qid) || qid->valueint <= 0 ||
+            (double)qid->valueint != qid->valuedouble || !cJSON_IsNumber(score)) {
+            cJSON_Delete(root);
+            return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST, "EXAM_INVALID_REQUEST",
+                                    "question_id/score 字段不正确");
+        }
+        ExamsError err = exams_append_question(cfg->db, exam_id, qid->valueint,
+                                               score->valuedouble);
+        cJSON_Delete(root);
+        if (err != EXAMS_OK)
+            return reply_exam_error(conn, exams_http_status(err), exams_code_of(err),
+                                    "追加题目失败");
+        return respond_exam_detail(conn, exam_id, cfg, MHD_HTTP_CREATED);
+    }
+
+    return reply_exam_not_allowed(conn, "PUT, POST");
+}
+
+/* /api/v1/exams/{id}/questions/{qid}：移除单题 */
+static enum MHD_Result handle_exam_question_item(struct MHD_Connection *conn,
+                                                 int exam_id, int qid,
+                                                 const char *method,
+                                                 const AppConfig *cfg,
+                                                 const Session *s) {
+    if (!exam_writable(conn, cfg, exam_id, s)) return MHD_YES;
+
+    if (strcmp(method, "DELETE") == 0) {
+        ExamsError err = exams_remove_question(cfg->db, exam_id, qid);
+        if (err != EXAMS_OK)
+            return reply_exam_error(conn, exams_http_status(err), exams_code_of(err),
+                                    "移除题目失败");
+        return respond_exam_detail(conn, exam_id, cfg, MHD_HTTP_OK);
+    }
+    return reply_exam_not_allowed(conn, "DELETE");
+}
+
+static enum MHD_Result handle_exams(struct MHD_Connection *conn, const char *url,
+                                    const char *method, const char *body,
+                                    size_t body_len, const AppConfig *cfg) {
+    const char *auth = MHD_lookup_connection_value(conn, MHD_HEADER_KIND, "Authorization");
+    Session *s = session_validate(extract_bearer_token(auth));
+    if (s == NULL) {
+        return reply_exam_error(conn, MHD_HTTP_UNAUTHORIZED, "UNAUTHORIZED",
+                                "未登录或 token 已过期");
+    }
+
+    /* 集合路径：/api/v1/exams */
+    if (strcmp(url, "/api/v1/exams") == 0) {
+        if (strcmp(method, "GET") == 0) {
+            int count = 0;
+            char **ids = NULL;
+            ExamsError err = exams_list(cfg->db, s->user_id, s->role, &count, &ids);
+            if (err != EXAMS_OK) {
+                return reply_exam_error(conn, exams_http_status(err), exams_code_of(err),
+                                        "试卷列表读取失败");
+            }
+            cJSON *root = cJSON_CreateObject();
+            cJSON *arr = root != NULL ? cJSON_AddArrayToObject(root, "exams") : NULL;
+            int ok = (arr != NULL);
+            for (int i = 0; ok && i < count; i++) {
+                int id = 0;
+                if (kv_str_to_int(ids[i], &id) != 0 || id <= 0) { ok = 0; break; }
+                cJSON *detail = NULL;
+                if (exams_get(cfg->db, id, &detail) != EXAMS_OK) { ok = 0; break; }
+                cJSON *item = cJSON_Duplicate(detail, 1);
+                cJSON_Delete(detail);
+                if (item == NULL) { ok = 0; break; }
+                cJSON *qs = cJSON_GetObjectItem(item, "questions");
+                int qcount = cJSON_IsArray(qs) ? cJSON_GetArraySize(qs) : 0;
+                cJSON_DeleteItemFromObject(item, "questions");
+                if (cJSON_AddNumberToObject(item, "question_count", qcount) == NULL) ok = 0;
+                cJSON_AddItemToArray(arr, item);
+            }
+            kv_free_str_array(ids);
+            if (!ok) {
+                cJSON_Delete(root);
+                return reply_exam_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                                        "EXAM_STORE_FAILED", "试卷列表读取失败");
+            }
+            char *json = cJSON_PrintUnformatted(root);
+            cJSON_Delete(root);
+            enum MHD_Result ret = reply_json(conn, MHD_HTTP_OK, json);
+            cJSON_free(json);
+            return ret;
+        }
+        if (strcmp(method, "POST") == 0) {
+            if (strcmp(s->role, "teacher") != 0 && strcmp(s->role, "admin") != 0) {
+                return reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXAM_FORBIDDEN",
+                                        "仅教师或管理员可创建试卷");
+            }
+            static const char *allowed[] = { "name", "description" };
+            cJSON *root = exams_parse_body(conn, body, body_len, allowed, 2);
+            if (root == NULL) return MHD_YES;
+            cJSON *name = cJSON_GetObjectItem(root, "name");
+            cJSON *desc = cJSON_GetObjectItem(root, "description");
+            if (!cJSON_IsString(name) || (desc != NULL && !cJSON_IsString(desc))) {
+                cJSON_Delete(root);
+                return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST, "EXAM_INVALID_REQUEST",
+                                        "name/description 字段类型不正确");
+            }
+            int id = 0;
+            ExamsError err = exams_create(cfg->db, name->valuestring,
+                                          desc ? desc->valuestring : NULL,
+                                          s->user_id, &id);
+            cJSON_Delete(root);
+            if (err != EXAMS_OK)
+                return reply_exam_error(conn, exams_http_status(err), exams_code_of(err),
+                                        "创建试卷失败");
+            return respond_exam_detail(conn, id, cfg, MHD_HTTP_CREATED);
+        }
+        return reply_exam_not_allowed(conn, "GET, POST");
+    }
+
+    /* 项路径：/api/v1/exams/{id} 及题目编排子路径 */
+    if (strncmp(url, "/api/v1/exams/", sizeof("/api/v1/exams/") - 1) == 0) {
+        const char *id_start = url + sizeof("/api/v1/exams/") - 1;
+        const char *q = strstr(id_start, "/questions");
+        long long exam_id = 0;
+        if (q != NULL && (q[10] == '\0' || q[10] == '/')) {
+            /* /{id}/questions 或 /{id}/questions/{qid} */
+            char id_buf[32];
+            size_t id_len = (size_t)(q - id_start);
+            if (id_len == 0 || id_len >= sizeof(id_buf))
+                return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
+                                        "exam not found");
+            memcpy(id_buf, id_start, id_len);
+            id_buf[id_len] = '\0';
+            if (parse_leading_id(id_buf, &exam_id) != 0 || exam_id <= 0)
+                return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
+                                        "exam not found");
+            if (q[10] == '\0') {
+                return handle_exam_questions(conn, (int)exam_id, method, body,
+                                             body_len, cfg, s);
+            }
+            const char *qid_start = q + 11; /* 跳过 "/questions/" */
+            long long qid = 0;
+            if (parse_leading_id(qid_start, &qid) != 0 || qid <= 0)
+                return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
+                                        "exam not found");
+            return handle_exam_question_item(conn, (int)exam_id, (int)qid, method,
+                                             cfg, s);
+        }
+        long long exam_id_plain = parse_path_id(conn, url, "/api/v1/exams/",
+                                                "{\"error\":\"exam not found\",\"code\":\"EXAM_NOT_FOUND\"}");
+        if (exam_id_plain == 0) return MHD_YES;
+        return handle_exam_item(conn, (int)exam_id_plain, method, body, body_len, cfg, s);
+    }
+
+    return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND", "exam not found");
+}
 
 /* ── Pi 异步解答接口：由 C 验证身份和读取题目，Node 执行模型任务 ── */
 static enum MHD_Result chat_error(struct MHD_Connection *conn, unsigned int status,
@@ -1282,6 +1761,12 @@ enum MHD_Result route_dispatch(struct MHD_Connection *conn, const char *url,
     if (strcmp(url, "/api/v1/chat") == 0 ||
         strncmp(url, "/api/v1/chat/", sizeof("/api/v1/chat/") - 1) == 0) {
         return handle_chat(conn, url, method, body, body_len, cfg);
+    }
+
+    /* 试卷接口：读、创建、元数据写、状态切换（F03） */
+    if (strcmp(url, "/api/v1/exams") == 0 ||
+        strncmp(url, "/api/v1/exams/", sizeof("/api/v1/exams/") - 1) == 0) {
+        return handle_exams(conn, url, method, body, body_len, cfg);
     }
 
     /* 其他 /api/ 路径 → 404 */
