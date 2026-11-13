@@ -1,66 +1,82 @@
 @startuml cls2_ai
-' AI+题库智能教学平台 — 类图2：AI 解答、对话与额度领域
-' 依据：ai-service/src/{jobs,agent,teaching,math-tools,contracts,config}.ts、
-'       server/src/teacher_api.c、ai_access.c、routes.c(handle_chat)、docs/teacher-api.md
+' AI+题库智能教学平台 — 图2-5 类图2：AI 解答、对话与额度领域（OOA 分析模型）
+' 课程依据（第10讲）：
+'   p13 只有一个属性/一个操作且无独立意义的对象应精简；同一信息不得在多个类中重复定义
+'   p14/p21 与实现条件（DBMS、加密库、JSON 库、编程语言构造）有关的细节推迟到 OOD
+'   p15/p17 主动对象要标注为主动类：控制线程的起点、自主推进行为的对象
+'   p20 关联用一端的属性（指针/对象标识）表示；紧密固定的聚合在整体对象中定义属性，
+'       其数据类型即部分对象类 → 用组合（实心菱形）
+'   p23 枚举作为属性的数据类型 + 取值范围标注，不单独建类、不与类建立关联
+'   p28 操作名用动词或动宾结构
+'   p61/62 聚合判定 6 条（物理整体部分/组织与下级/团体与成员/空间包容/抽象整体部分/材料组成）；
+'       满足聚合且整体与部分生命周期相同者才是组合
+'   p70 若能用关联/聚合/泛化明确表达类间关系，就不要停留为依赖
+'   p80 一类对象的操作执行时需要依靠另一类对象的操作 → 依赖 <<use>>（虚线枝形箭头）
+' 说明：操作名一律使用问题域术语（动词/动宾），不使用 C 函数名、TS 方法名、SQL 或加密库名；
+'   操作到 ai-service/src/*.ts 与 server/src/teacher_api.c、ai_access.c 具体函数的映射
+'   见《02》§2.2.2.2 各操作说明表的“约束条件及其他”列与《03》§3.1.2。
+' 依据：ai-service/src/{jobs,agent,teaching,math-tools,answer-review,contracts,config}.ts、
+'       server/src/{teacher_api,ai_access,routes}.c、docs/teacher-api.md、docs/pi-chat-api.md
 skinparam shadowing false
 skinparam classAttributeIconSize 0
 skinparam class {
   BackgroundColor<<实体类>> #E3F2FD
   BorderColor<<实体类>> #1565C0
-  BackgroundColor<<控制类>> #F3E5F5
-  BorderColor<<控制类>> #6A1B9A
+  BackgroundColor<<主动类>> #FCE4EC
+  BorderColor<<主动类>> #AD1457
+  BackgroundColor<<工具类>> #F3E5F5
+  BorderColor<<工具类>> #6A1B9A
   BackgroundColor<<值对象>> #F1F8E9
   BorderColor<<值对象>> #558B2F
 }
 
-enum "任务状态 JobStatus" as JobStatus {
-  queued
-  running
-  succeeded
-  failed
-  cancelled
-}
-enum "教学模式 TeachingMode" as TeachingMode {
-  solve
-  hint
-  review
-}
-
 class "对话 Conversation" as Conv <<实体类>> {
   +id : UUID
-  +owner : int «用户id»
-  +question : int «题目id»
-  +mode : TeachingMode
+  +owner : int «用户标识，实现 B15 反向链»
+  +question : int «题目标识，实现 B14 反向链»
+  +mode : String «solve|hint|review»
   +credentialScope : String «teacherId:version»
-  +messages : AgentMessage[] «完整模型/工具消息»
-  +activeJob : UUID? «同对话一次仅一个任务»
-  +touched : long
+  +messages : 消息集 «0..*，完整模型/工具消息»
+  +activeJob : UUID «0..1，同对话一次仅一个任务»
+  +touched : 时间 «最近活跃时刻»
   --
-  +canAccept(mode) : bool
-  +appendHistory(messages) : void
+  +校验追问受理(教学模式)
+  +占用任务锁(任务标识)
+  +释放任务锁()
+  +追加对话历史(消息集)
+  +更新最近活跃时刻()
 }
 note bottom of Conv
-  仅存 Pi 进程内存，TTL 默认 1 小时；
-  上限：12 轮成功提问或历史 64KB → 409 CONVERSATION_LIMIT；
-  跨用户/跨题目访问返回 404
+  mode 为枚举数据类型（solve/hint/review），按 p23 以
+  “数据类型+取值范围”标注在属性栏，不单独建枚举类与关联。
+  仅存 Pi 进程内存，TTL 默认 1 小时；上限 12 轮成功提问或
+  历史 64KB；跨用户/跨题目访问视为不存在。状态变迁见图3-8。
 end note
 
 class "AI解答任务 ChatJob" as Job <<实体类>> {
   +id : UUID
   +owner : int
-  +status : JobStatus
-  +teaching : TeachingContext
-  +created / finished : long
-  +result : Completion?
-  +error : {error, code, http_status}?
+  +status : String «queued|running|succeeded|failed|cancelled»
+  +created : 时间
+  +finished : 时间 «0..1»
+  +error : 错误信息 «0..1，含错误码与 HTTP 状态»
   --
-  +view() : JSON «job_id/conversation_id/status/mode/hint_level/reply/usage»
+  +{static} 创建任务(归属用户, 教学上下文)
+  +置为执行中()
+  +置为成功(解答结果)
+  +置为失败(错误信息)
+  +置为已取消()
+  +组装任务视图()
 }
+note bottom of Job
+  status 为枚举数据类型，取值即图2-12 状态图的五个状态；
+  四个“置为…”操作与图2-12 的转换动作一一对应
+  （跨图一致性：状态图 ↔ 类图操作）。
+end note
 
 class "解答结果 Completion" as Completion <<值对象>> {
-  +reply : String «安全文本,可含Markdown»
-  +model : String «mock 或配置模型名»
-  +usage : Usage
+  +reply : String «安全文本，可含 Markdown»
+  +model : String «mock 或配置的模型名»
 }
 class "用量 Usage" as Usage <<值对象>> {
   +inputTokens : int
@@ -69,130 +85,193 @@ class "用量 Usage" as Usage <<值对象>> {
   +toolCalls : int
 }
 class "教学上下文 TeachingContext" as TCtx <<值对象>> {
-  +mode : TeachingMode
-  +hintLevel : int? «hint模式1→2→3,失败/取消不升级»
+  +mode : String «solve|hint|review»
+  +hintLevel : int «0..1；hint 模式 1→2→3，失败/取消不升级»
 }
 
-class "任务队列 Jobs" as Jobs <<控制类>> {
-  -jobs : Map<UUID, ChatJob>
-  -conversations : Map<UUID, Conversation>
-  -queue : ChatJob[] «有界:并发4+等待32»
-  -running : int
+class "任务队列 Jobs" as Jobs <<主动类>> {
+  +并发上限 : int «默认 4»
+  +等待上限 : int «默认 32»
+  +对话上限 : int «默认 1000»
+  +存活时长 : 时长 «默认 1 小时»
   --
-  +submit(request) : view «202 受理»
-  +get(jobId, owner) : view
-  +cancel(jobId, owner) : view
-  -pump() : void «并发槽调度»
-  -execute(job) : Promise «预算30s»
-  -clean() : void «TTL 1h 清理»
+  +受理任务(提交请求)
+  +查询任务(任务标识, 归属用户)
+  +取消任务(任务标识, 归属用户)
+  +创建对话(归属用户, 题目, 教学模式)
+  +查询对话(对话标识, 归属用户)
+  -登记对话(对话)
+  -调度出队任务()
+  -执行任务(任务)
+  -清理过期对象()
 }
+note bottom of Jobs
+  **主动类**（p15）：持有定时清理与出队调度，无人请求时也
+  自主推进任务执行，是 Pi 侧控制线程的起点。职责有界：只做
+  受理/查询/取消/调度/清理，模型与工具执行委派给 Agent 执行器
+  （依赖 D6），避免把全部功能堆在一个管理类中。
+  以登记表持有任务与对话（内存登记、可被 TTL 移除 → 聚合，p61）。
+end note
 
-class "Agent执行器 AgentRun" as Agent <<控制类>> {
-  +completion : Promise<Completion>
-  +cancel() : void
+class "Agent执行器 AgentRunner" as Agent <<主动类>> {
+  +执行结果 : 解答结果 «异步产生»
   --
-  +startAgent(config, request, history, teaching) : AgentRun
+  +{static} 启动执行(执行配置, 提交请求, 对话历史, 教学上下文)
+  +取消执行()
 }
 note bottom of Agent
-  每任务独立 Pi Agent；系统提示由
-  teaching.ts 按模式注入对应 SKILL.md；
-  预算：≤3 次模型调用、≤6 次工具调用
+  **主动类**：每任务一个独立异步执行流，独立于请求处理线程；
+  按教学模式注入教学技能（D7）。预算：≤3 次模型调用、
+  ≤6 次工具调用、总 30s、输出 ≤2048 tokens；模型自动重试关闭。
 end note
 
 class "教学技能 TeachingSkill" as Skill <<实体类>> {
-  +name : solve-question/give-hints/review-answer
+  +name : String «solve-question|give-hints|review-answer»
   +description : String
-  +content : String «SKILL.md 正文,≤16KB»
+  +content : String «技能正文，≤16KB»
 }
-class "受限数学工具 MathTool" as Tool <<控制类>> {
-  +arithmetic(a, b, op) : number
-  +solve_linear_equation(a, b, c) : {kind, x?}
-  +verify_linear_solution(a, b, c, x) : {holds, residual...}
+class "受限数学工具 MathTool" as Tool <<工具类>> {
+  --
+  +四则运算(操作数, 操作数, 运算符)
+  +求解一元一次方程(a, b, c)
+  +校验方程解(a, b, c, x)
 }
 note bottom of Tool
-  hint 模式仅开放 arithmetic；
-  只解 a*x+b=c，数值容差校验，
-  不核验原题/单位/定义域
+  被动服务对象（非主动类）：只在被 Agent 执行器调用时工作。
+  hint 模式仅开放“四则运算”；只解 a*x+b=c，带数值容差校验，
+  不核验原题、单位与定义域。实现见 ai-service/src/math-tools.ts。
 end note
 
 class "教师API配置 TeacherApiConfig" as TApi <<实体类>> {
-  +teacherId : int «PK»
-  +ownerKey : String «账号键绑定»
+  +teacherId : int «主键，一教师一条»
+  +ownerKey : String «绑定账号键，防标识重用移植»
   +model : String
-  +secret : Blob «AES-256-GCM: 12B nonce+密文+16B tag»
-  +maskedKey : String «****后4位»
+  +secret : 密文 «加密后的 API Key»
+  +maskedKey : String «脱敏展示：****+末 4 位»
   +enabled : bool
-  +version : int «每次保存+1»
-  +updatedAt : int
+  +version : int «每次保存 +1»
+  +updatedAt : 时间
   --
-  +teacher_api_save(cfg, teacher, key, model, enabled) : code?
-  +teacher_api_toggle(cfg, teacher, enabled) : code?
-  +teacher_api_metadata(cfg, teacher) : JSON «脱敏»
-  +teacher_api_resolve(cfg, user, role, question, charge) : TeacherExecution
+  +保存配置(教师, 密钥, 模型, 启用)
+  +启停配置(教师, 启用)
+  +生成脱敏元数据(教师)
+  +解析可用凭证(用户, 角色, 题目, 是否扣次)
 }
 note bottom of TApi
-  AAD 绑定 teacher-api-v1:{id}:{owner}:{version}:{model}；
-  主密钥 AI_KEY_ENCRYPTION_KEY(64hex) 仅环境变量注入；
-  表 teacher_ai_credentials
+  加密算法、AAD 绑定串、主密钥注入方式与表结构属实现条件，
+  按第10讲 p14/p21 推迟到 OOD（见图3-1 TeacherApiService、
+  图3-6 ER 图 teacher_ai_credentials）。
+  “解析可用凭证”产出的**运行时凭证**（解密后短暂驻留的明文 Key）
+  是设计期概念，OOA 不建模，见 OOD 图3-1 TeacherExecution。
+  状态变迁见图2-13。
 end note
 
 class "日额度使用 DailyQuota" as Quota <<实体类>> {
   +studentId : int
   +teacherId : int
-  +day : int «Asia/Shanghai 自然日»
-  +used : int
+  +day : int «上海自然日»
+  +used : int «已用次数»
+  +limit : int «额度上限，默认 20»
   --
-  +limit : int «AppConfig.ai_student_daily_limit,默认20»
+  +读取当日用量()
+  +扣减一次()
+  +退还一次()
 }
+note bottom of Quota
+  修正：limit 原被误置于操作分栏（分隔线之下），现归入属性分栏。
+  limit 来源于应用配置而非本对象自有数据，作为约束属性保留并在此说明。
+  “扣减一次”要求带“used < limit”原子守卫，超额即拒绝；
+  退还仅在任务被明确拒绝时发生（见《04》）。
+end note
+
 class "扣次记录 ChargeRecord" as Charge <<实体类>> {
-  +id : int «AUTOINCREMENT»
-  +studentId / teacherId / day
-  +released : bool «退还标记»
-  +createdAt : int
+  +id : int «自增»
+  +studentId : int
+  +teacherId : int
+  +day : int
+  +released : bool «是否已退还»
+  +createdAt : 时间
+  --
+  +标记已退还()
 }
 class "平台AI授权 AiAccessGrant" as Grant <<实体类>> {
-  +userId : int «PK»
+  +userId : int «主键»
   +userKey : String
   +enabled : bool
-  +expiresAt : int? «UTC秒»
-  +updatedAt : int
+  +expiresAt : 时间 «0..1，UTC 秒»
+  +updatedAt : 时间
   --
-  +ai_access_get(db, userId, now) : AiAccess «默认拒绝»
+  +{static} 查询平台授权(用户标识, 当前时刻)
 }
+note bottom of Grant
+  仅 platform 兼容模式使用；默认 teacher 模式不经此授权。
+  默认拒绝：无记录、已停用、已过期或存储故障均不放行。
+end note
+
 class "授权审计 AiAccessAudit" as GAudit <<实体类>> {
-  +id / userId / userKey
-  +action : grant|revoke
-  +actor / reason / createdAt
+  +id : int «自增»
+  +userId : int
+  +userKey : String
+  +action : String «grant|revoke»
+  +expiresAt : 时间 «0..1»
+  +actor : String
+  +reason : String «0..1»
+  +createdAt : 时间
+  --
+  +{static} 记录授权变更(用户, 动作, 到期时刻, 操作者, 理由)
 }
 class "教师API审计 TeacherApiAudit" as TAudit <<实体类>> {
-  +id / teacherId / version
-  +action : configure_or_enable|disable
-  +createdAt
+  +id : int «自增»
+  +teacherId : int
+  +version : int
+  +action : String «configure_or_enable|disable»
+  +createdAt : 时间
+  --
+  +{static} 记录配置变更(教师, 版本, 动作)
 }
+note bottom of TAudit
+  两类审计均为“需要由系统长期记忆的事件”对象（第10讲 p10）：
+  只记录信息、不提供操作，由写入方在同一事务内追加；
+  当前无查询接口与页面（🟡，见图2-3 UC3-14）。
+end note
 
-' ── 跨图引用（完整定义见 cls1_domain.puml）──
+' ── 跨图引用桩（完整定义见图2-4 cls1_domain.puml）──
+class "平台服务接口 PlatformInterface" as PI <<主动类>>
 class "用户 User" as User <<实体类>>
 class "教师 Teacher" as Teacher <<实体类>>
 class "学生 Student" as Student <<实体类>>
 class "题目 Question" as Question <<实体类>>
 
-Conv "1" -- "0..*" Job : 顺序任务(同时仅1个active) >
-Job *-- "0..1" Completion
-Completion *-- "1" Usage
-Job --> TCtx
-Conv --> TeachingMode
-Jobs o-- Conv
-Jobs o-- Job
-Jobs --> Agent : execute 启动
-Agent --> Skill : 按模式注入(依赖)
-Agent --> Tool : 受限工具集(依赖)
-Teacher "1" -- "0..1" TApi : 一教师一条配置(组合)
-TApi "1" -- "0..*" TAudit : 变更审计 >
-Grant "0..1" -- "1" User : 平台模式授权 >
-Grant "1" -- "0..*" GAudit : 授权审计 >
-Quota "1" -- "0..*" Charge : 扣次明细 >
-Student "1" -- "0..*" Quota : 每教师每日 >
-Teacher "1" -- "0..*" Quota
-Conv ..> Question : question 绑定(跨图引用)
-Conv ..> User : owner 绑定(跨图引用)
+Conv "1" -- "0..*" Job : B1 顺序任务 >
+Job "1" *-- "0..1" Completion : B2 任务结果 >
+Completion "1" *-- "1" Usage : B3 结果用量 >
+Job "1" *-- "1" TCtx : B4 教学上下文 >
+Jobs "1" o-- "0..*" Conv : B5 登记对话 >
+Jobs "1" o-- "0..*" Job : B6 登记任务 >
+Conv "1" -- "0..*" Question : B14 绑定题目 >
+Conv "1" -- "0..1" User : B15 归属用户 >
+note on link
+  B14/B15 原画为依赖，现改为关联：Conversation 的
+  question / owner 属性正是实现该链的关联属性（第10讲 p20）；
+  能用关联明确表达类间关系时就不应停留为依赖（p70）。
+end note
+Teacher "1" -- "0..1" TApi : B7 教师配置 >
+note on link
+  B7 为**一般二元关联而非聚合/组合**：按第10讲 p61 的六条聚合
+  判定（物理整体与部分、组织与下级部门、团体与成员、空间包容、
+  抽象事物整体与部分、材料组成），配置均不满足；且当前无教师
+  账号删除接口，无法证明二者生命周期相同（p62），故不画菱形。
+end note
+TApi "1" -- "0..*" TAudit : B8 配置变更审计 >
+Grant "0..1" -- "1" User : B9 平台模式授权 >
+Grant "1" -- "0..*" GAudit : B10 授权变更审计 >
+Quota "1" -- "0..*" Charge : B11 扣次明细 >
+Student "1" -- "0..*" Quota : B12 学生日额度 >
+Teacher "1" -- "0..*" Quota : B13 教师日额度 >
+
+PI ..> Jobs : D4 转交AI解答用况 <<use>>
+PI ..> TApi : D5 转交API配置用况 <<use>>
+Jobs ..> Agent : D6 启动执行 <<use>>
+Agent ..> Skill : D7 注入教学技能 <<use>>
+Agent ..> Tool : D8 调用受限工具 <<use>>
 @enduml

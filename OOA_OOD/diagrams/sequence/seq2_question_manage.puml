@@ -1,69 +1,111 @@
 @startuml seq2_question_manage
-' 顺序图2：教师创建与管理题目（CRUD）
+' AI+题库智能教学平台 — 图2-7 顺序图2：教师创建与管理题目（OOA 分析层）
+' 课程依据（第11讲 p6/p7/p9/p16-21；第10讲 p14 OOA 不含 GUI 与 DBMS 对象）
+'   本图不含“客户端/接口工具”（人机交互部分）与 KV 存储层/SQLite（数据管理部分）；
+'   这些设计对象及其消息见 OOD 图3-11（教师题目管理设计顺序图）、图3-1 与图3-6。
+' 说明：消息名与图2-4 类图 Question / Session / PlatformInterface 的操作一一对应。
+'       web/ 未提供题目管理页面，当前经 HTTP 接口工具调用同一组接口（🟡 集成差距见《04》）。
 ' 依据：server/src/routes.c（handle_questions / handle_question_create / _update / _delete、
-'       extract_question_fields、next_question_id、kv_to_question）、server/src/kv_store.c
-' 说明：web/ 未提供题目管理页面，当前由接口工具或后续前端调用同一组 HTTP 接口
+'       extract_question_fields、next_question_id、kv_to_question）、docs/questions.md
 autonumber
 skinparam shadowing false
+' 课程格式（第11讲 p6）：对象只在顺序图**顶部**标注一次（[对象名] : 类名）；
+' 下方不再重复绘制对象框与对象名，故关闭 PlantUML 默认的底部 footbox。
+hide footbox
 
 actor "教师\n(或管理员)" as T
-boundary "客户端\n(接口工具/未来管理页)" as CLI
-control "路由分发器\nroute_dispatch" as RD
-control "题目控制器\nhandle_questions\n(routes.c)" as QC
-entity "会话管理\nauth.c" as SESS
-entity "KV存储层\nkv_store.c\n(namespace qdata)" as KV
-database "SQLite\nqdata 表" as DB
+participant "pi : 平台服务接口" as PI <<主动类>>
+participant "session : 登录会话" as SESS
+participant "question : 题目" as Q
 
-T -> CLI : 构造题目 JSON 并发起请求
-CLI -> RD : POST /api/v1/questions\nAuthorization: Bearer <token>
-RD -> QC : handle_questions(...)
-
-QC -> SESS : session_validate(extract_bearer_token(header))
-alt 未登录 / token 过期
-  QC --> CLI : 401 {"error":"未登录或 token 已过期"}
+== 新增题目（用况 UC1-07） ==
+T -> PI : 新增题目(题干, 题型, 选项, 答案, 解析, 知识点)
+activate PI
+PI -> SESS : 校验会话(令牌)
+activate SESS
+SESS --> PI : 会话（含角色）或“无效”
+deactivate SESS
+alt 会话无效或已过期
+  PI --> T : 拒绝（未登录或登录已过期）
+else 角色为学生
+  PI --> T : 拒绝（仅教师或管理员可写；权限检查先于题目存在性校验）
+else 角色合法
+  PI -> Q : 创建题目(题干, 题型, 选项, 答案, 解析, 知识点, 归属教师)
+  activate Q
+  Q -> Q : 校验字段()
+  note right of Q
+    校验规则：题干与答案非空；
+    题型 ∈ {single_choice, short_answer}；
+    单选题选项非空且答案 ∈ 选项标记；
+    简答题选项必须为空；
+    知识点为字符串数组。
+  end note
+  alt 字段校验失败
+    Q --> PI : 校验失败（具体字段原因）
+  else 校验通过
+    Q --> PI : 新题目（标识 = 当前最大标识 + 1；状态 = 已发布；归属教师 = 会话用户）
+  end
+  deactivate Q
+  PI --> T : 新增结果（成功并返回题目 / 字段非法）
 end
-QC -> QC : 写操作角色检查：role ∈ {teacher, admin}
-alt 学生或其他角色
-  QC --> CLI : 403 {"error":"仅教师或管理员可执行此操作"}\n（权限检查先于题目存在性校验）
-end
+deactivate PI
 
-== 新增（POST /api/v1/questions） ==
-QC -> QC : cJSON_Parse + extract_question_fields：\ncontent 非空；type∈{single_choice,short_answer}；\nanswer 非空；single_choice 选项非空且 answer∈labels；\nshort_answer 选项必须为空数组；knowledge_points 为字符串数组
-opt 字段校验失败
-  QC --> CLI : 400 {"error":"<具体字段原因>"}
-end
-QC -> KV : next_question_id：kv_list_keys("qdata") 取最大数字 id+1
-QC -> KV : kv_set×8：content/options/answer/analysis/\ntype/knowledge_points/teacher_id=会话user_id/status=active
-KV -> DB : INSERT OR REPLACE INTO qdata ...
-QC -> KV : kv_to_question(key) 回读组装题目对象
-QC --> CLI : 201 {"question":{...}}
-CLI --> T : 展示创建结果
-
-== 修改（PUT /api/v1/questions/{id}，部分更新） ==
-CLI -> RD : PUT /api/v1/questions/{id}
-RD -> QC : handle_question_update
-QC -> QC : parse_question_id：非正整数/溢出/多余路径段 → 404
-QC -> KV : kv_to_question(id) 读旧题
+== 修改题目（用况 UC1-08，部分更新） ==
+T -> PI : 修改题目(题目标识, 待更新字段集)
+activate PI
+PI -> SESS : 校验会话(令牌)
+activate SESS
+SESS --> PI : 会话（含角色）或“无效”
+deactivate SESS
+PI -> Q : 更新字段(待更新字段集)
+activate Q
+Q -> Q : 校验字段()
 alt 题目不存在
-  QC --> CLI : 404 {"error":"question not found"}
+  Q --> PI : 题目不存在
+else 合并后整体校验失败
+  Q --> PI : 校验失败（具体字段原因）
+else 校验通过
+  Q --> PI : 更新后的题目（标识不变）
 end
-QC -> QC : 旧题与请求体合并（id 不可改；至少含一个可更新字段），\n对合并结果执行与 POST 相同的整体校验
-opt 校验失败
-  QC --> CLI : 400
-end
-QC -> KV : kv_set 覆盖被更新字段
-QC --> CLI : 200 {"question":{...}}
+deactivate Q
+PI --> T : 修改结果（成功 / 题目不存在 / 字段非法 / 未登录 / 无权）
+deactivate PI
 
-== 删除（DELETE /api/v1/questions/{id}，物理删除） ==
-CLI -> RD : DELETE /api/v1/questions/{id}
-RD -> QC : handle_question_delete
-QC -> KV : kv_delete_key("qdata", key)
-KV -> DB : DELETE FROM qdata WHERE key_name=?
-QC --> CLI : 200 {"status":"ok"}
+== 删除题目（用况 UC1-09，物理删除） ==
+T -> PI : 删除题目(题目标识)
+activate PI
+PI -> SESS : 校验会话(令牌)
+activate SESS
+SESS --> PI : 会话（含角色）或“无效”
+deactivate SESS
+PI -> Q : 删除()
+activate Q
+Q --> PI : 已删除（该标识再查询视为不存在）
+deactivate Q
+PI --> T : 删除结果（成功 / 题目不存在 / 未登录 / 无权）
+deactivate PI
 
-note over QC, DB
-  读取链路（GET 列表/详情）对所有登录角色开放：
-  列表遍历 qdata 全部 key 组装，无分页/检索；
-  数据库文件缺失时返回 500 而非空列表
+== 浏览题目列表与详情（用况 UC1-05 / UC1-06，所有登录角色） ==
+T -> PI : 浏览题目列表()
+activate PI
+PI -> SESS : 校验会话(令牌)
+activate SESS
+SESS --> PI : 会话或“无效”
+deactivate SESS
+PI -> Q : 组装题目信息()
+activate Q
+Q --> PI : 题目信息（不含内部幂等键与归属教师标识）
+deactivate Q
+PI --> T : 题目列表（按标识升序；当前无分页与检索）
+deactivate PI
+
+note over PI, Q
+  本图全部消息位于同一控制线程内：pi 为主动对象（控制线程起点），
+  session 与 question 为被动对象，其执行规约均在 pi 的执行规约之内
+  开始与结束（第11讲 p21）。
+  修改与删除的“会话无效 / 角色为学生”两种拒绝与新增一致，
+  为保持图面清晰未在各自分段中重复绘制 alt 分支。
+  持久化细节（kv 读写、物理删除语句、数据库不可读时的错误处理）
+  属数据管理部分，见 OOD 图3-11 与图3-6。
 end note
 @enduml

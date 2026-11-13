@@ -1,35 +1,49 @@
 @startuml st3_teacher_api
-' 状态图3：教师 AI API 配置生命周期
-' 依据：server/src/teacher_api.c（save/toggle/load/metadata）、teacher_api_routes.c、
-'       docs/teacher-api.md；每次保存 version+1 并写 teacher_ai_audit
+' AI+题库智能教学平台 — 图2-13 状态图3：教师 AI API 配置（TeacherApiConfig）生命周期
+' 课程依据（第12讲）：
+'   p8     内部转移：事件发生不导致状态改变 → 写在状态的内部转移分栏，不画成自转换
+'   p17    转换串格式：事件名[(参数表)] [监护条件] [/动作表达式]
+'   p19/20 状态内转移用 entry / exit / do
+'   p22    源状态与目标状态相同的“状态间转移”要先 exit 再 entry，与内部转移语义不同
+'   p23    状态图可以没有终止状态（对象长期存在、不终止）
+'   p37    建模后检查可达性与死状态
+' 说明：事件名与图2-5 类图 TeacherApiConfig 的操作（保存配置/启停配置/生成脱敏元数据）一一对应。
+'       每次保存 version + 1 并写审计；本图不含终止伪状态——当前无删除配置的接口，配置长期保留。
+' 依据：server/src/teacher_api.c（保存/启停/读取/元数据）、teacher_api_routes.c、docs/teacher-api.md
 skinparam shadowing false
 
-state "未配置" as Unconfigured
-state "已配置·启用" as Enabled
-state "已配置·停用" as Disabled
+state "未配置" as Unconfigured {
+  Unconfigured : 启停配置(启用) / 拒绝并提示“配置不存在”，状态不变
+  Unconfigured : 生成脱敏元数据() / 返回“未配置”
+}
+state "已配置·启用" as Enabled {
+  Enabled : 保存配置(密钥, 模型) [密钥与模型格式合法 ∧ 身份匹配]\n/ 重新加密存储；version := version + 1；写配置变更审计
+  Enabled : 生成脱敏元数据() / 返回已配置、已启用、模型、脱敏 Key、版本
+}
+state "已配置·停用" as Disabled {
+  Disabled : 生成脱敏元数据() / 返回已配置、已停用、模型、脱敏 Key、版本
+}
 
-[*] --> Unconfigured : 教师注册/登录即具备管理资格\n（无需运维授权）
+[*] --> Unconfigured : 创建教师账号(用户名, 密码) [角色 = teacher] / 建立该教师的配置槽位
 
-Unconfigured --> Enabled : PUT /teacher/ai-api {api_key, model?}\n[守卫: valid_key ∧ valid_model ∧ 身份匹配]\n动作: AES-256-GCM 加密入库，version=1\n写审计 configure_or_enable
+Unconfigured --> Enabled : 保存配置(密钥, 模型)\n[密钥与模型格式合法 ∧ 身份匹配]\n/ 加密存储；version := 1；enabled := true；写配置变更审计
 
-Unconfigured --> Unconfigured : PATCH（无配置）\n动作: 404 AI_API_NOT_CONFIGURED
-
-Enabled --> Enabled : PUT 替换 Key/模型\n动作: version+1，重加密（新 nonce）\ncredentialScope 变更 → 旧对话追问 409
-Enabled --> Disabled : PATCH {enabled:false}\n动作: 解密→重存，version+1，审计 disable\n学生新提交 → 403 AI_API_DISABLED
-Disabled --> Enabled : PATCH {enabled:true}\n动作: 解密→重存，version+1，审计 configure_or_enable
-
-Enabled --> [*] : （配置长期保留，无删除接口）
-Disabled --> [*]
+Enabled --> Disabled : 启停配置(false) [配置存在] / 解密后重新加密存储；version := version + 1；写审计（停用）
+Disabled --> Enabled : 启停配置(true) [配置存在] / 解密后重新加密存储；version := version + 1；写审计（配置或启用）
 
 note right of Enabled
-  GET 仅返回脱敏元数据
-  （configured/enabled/provider/model/
-  masked_key/version/updated_at）；
-  student/admin 访问管理接口一律 403
+  “保存配置”“生成脱敏元数据”不改变对象所处状态，
+  故按第12讲 p8 建为**内部转移**（原图误画为自转换）。
+  仅学生与管理员无权访问本配置接口（一律拒绝）；
+  查询只返回脱敏元数据，绝不回显完整 Key 或密文。
+  version 变更会使存量对话的凭证作用域失效，
+  追问被拒（见图3-8 对话状态图的内部转移）。
 end note
 
 note bottom of Disabled
-  停用不影响已受理任务：
-  仍可 GET 查询 / DELETE 取消
+  停用不影响已受理任务：仍可查询与取消。
+  本状态图**没有终止伪状态**（第12讲 p23）：当前无删除配置的
+  接口，配置对象随教师账号长期保留，不应以终态表达“不终止”。
+  可达性检查（p37）：三个状态均可达且均可离开，无死状态。
 end note
 @enduml

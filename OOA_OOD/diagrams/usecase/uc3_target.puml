@@ -1,10 +1,12 @@
 @startuml uc3_target
-' AI+题库智能教学平台 — 用况图3：目标功能（需求文档有描述、当前仓库无代码支撑）
-' 依据：docs/AI题库项目整体预期功能说明书.md、docs/软件需求说明书.md（F-05~F-17）、
-'       docs/项目Backlog.md（2026-11-09 状态核实）；以下用况均未在 server/web/ai-service 中实现
+' AI+题库智能教学平台 — 图2-3 用况图3：目标功能子系统（需求有描述、当前仓库无代码支撑）
+' 依据：docs/软件需求说明书.md（用况概览 UC-02/UC-03/UC-06/UC-07/UC-08/UC-09/UC-10、F-05~F-17）、
+'       docs/AI题库项目整体预期功能说明书.md、docs/项目开发时间轴.md §3（F03/F04/F06/F08~F19 功能清单）
+' 说明：以下用况均未在 server/web/ai-service 中实现（⬜ 目标功能）或仅有部分数据结构（🟡 部分实现）。
+' 课程依据（第3讲 §4）：主题矩形标识子系统名；«include» 由基础用况指向被包含用况；
+'   «extend» 由扩展用况指向被扩展用况，并在箭头上标明扩展点与扩展条件；用况统一编号。
 left to right direction
 skinparam shadowing false
-skinparam actorStyle awesome
 skinparam packageStyle rectangle
 skinparam usecase {
   BackgroundColor<<目标功能>> #FFF3E0
@@ -14,59 +16,95 @@ skinparam usecase {
 }
 
 actor "教师\nteacher" as Teacher
-actor "学生\nstudent" as Student
 actor "管理员\nadmin" as Admin
+actor "学生\nstudent" as Student
 
-rectangle "目标功能（待实现 / 部分实现）" {
-  usecase "创建/编辑试卷" as UCExam <<目标功能>>
-  usecase "组织试卷题目\n(排序与分值)" as UCPaperQ <<目标功能>>
-  usecase "导出试卷\n(PDF/Word/Markdown/LaTeX)" as UCExport <<目标功能>>
-  usecase "批量导入题目\n(Word/PDF/图片/LaTeX/MD/纯文本)" as UCImport <<目标功能>>
-  usecase "提交题目\n(学生投稿)" as UCSubmitQ <<目标功能>>
-  usecase "审核学生提交\n(通过/驳回/修改后通过)" as UCReviewQ <<目标功能>>
-  usecase "分支讨论树管理\n(Fork分支/折叠/推荐答案标记)" as UCFork <<部分实现>>
-  usecase "题目搜索与筛选" as UCSearch <<目标功能>>
-  usecase "用户管理\n(创建/禁用/改角色/重置密码)" as UCUserMgmt <<目标功能>>
-  usecase "审计日志查询" as UCAudit <<部分实现>>
-  usecase "个人中心\n(学习记录/提问历史/额度查看)" as UCProfile <<目标功能>>
-  usecase "重复提问检测\n(向量检索+语义相似度)" as UCDup <<目标功能>>
-  usecase "通知中心" as UCNotify <<目标功能>>
-  usecase "API捐赠\n(学生向教师捐赠API资源)" as UCDonate <<目标功能>>
-  usecase "数据备份与恢复" as UCBackup <<目标功能>>
+rectangle "AI+题库智能教学平台 — 目标功能子系统（待实现 / 部分实现）" {
+  ' 声明顺序按“主要参与者分组”排列（教师+管理员 → 管理员 → 三者共有 → 学生），
+  ' 以减少 left-to-right 布局下关联线的成束交叉（排版要求：连线清晰、不拥挤）。
+  usecase "UC3-01\n创建/编辑试卷" as UCExam <<目标功能>>
+  usecase "UC3-02\n组织试卷题目\n(排序与分值)" as UCPaperQ <<目标功能>>
+  usecase "UC3-03\n导出试卷\n(PDF/Word/Markdown/LaTeX)" as UCExport <<目标功能>>
+  usecase "UC3-04\n批量导入题目\n(Word/PDF/图片/LaTeX/MD/纯文本)" as UCImport <<目标功能>>
+  usecase "UC3-05\n题目搜索与筛选" as UCSearch <<目标功能>>
+  usecase "UC3-07\n审核学生提交\n(通过/驳回/修改后通过)" as UCReviewQ <<目标功能>>
+  usecase "UC3-09\n配置重复提问检测策略\n(禁止/提醒/不监督)" as UCDupPolicy <<目标功能>>
+  usecase "UC3-11\n配置多层级调用额度\n(教师/学生/题目；次数/Token/金额)" as UCQuota <<目标功能>>
+  usecase "UC3-12\n配置多模型路由策略" as UCRouter <<目标功能>>
+  usecase "UC3-13\n用户管理\n(创建/禁用/改角色/重置密码)" as UCUserMgmt <<目标功能>>
+  usecase "UC3-14\n审计日志查询" as UCAudit <<部分实现>>
+  usecase "UC3-15\n数据备份与恢复" as UCBackup <<目标功能>>
+  usecase "UC3-10\n分支讨论树管理\n(Fork分支/折叠/推荐答案标记)" as UCFork <<部分实现>>
+  usecase "UC3-18\n查看系统通知\n(审核结果/额度告警)" as UCNotify <<目标功能>>
+  usecase "UC3-06\n提交题目\n(学生投稿)" as UCSubmitQ <<目标功能>>
+  usecase "UC3-08\n检测重复提问\n(向量检索+语义相似度)" as UCDup <<目标功能>>
+  usecase "UC3-16\n个人中心\n(学习记录/提问历史/额度查看)" as UCProfile <<目标功能>>
+  usecase "UC3-17\nAPI捐赠\n(学生向教师捐赠API资源)" as UCDonate <<目标功能>>
 }
 
 Teacher --> UCExam
 Teacher --> UCExport
 Teacher --> UCImport
-Teacher --> UCReviewQ
 Teacher --> UCSearch
-Teacher --> UCDup
+Teacher --> UCReviewQ
+Teacher --> UCDupPolicy
+Teacher --> UCQuota
+Teacher --> UCRouter
+Teacher --> UCFork
+Admin --> UCExam
+Admin --> UCExport
+Admin --> UCImport
+Admin --> UCSearch
+Admin --> UCQuota
+Admin --> UCRouter
+Admin --> UCUserMgmt
+Admin --> UCAudit
+Admin --> UCBackup
 Student --> UCSubmitQ
 Student --> UCFork
 Student --> UCProfile
 Student --> UCDonate
-Admin --> UCUserMgmt
-Admin --> UCAudit
-Admin --> UCBackup
-Admin --> UCNotify
+Student --> UCNotify
+Teacher --> UCNotify
 
 UCExam ..> UCPaperQ : <<include>>
-UCSubmitQ ..> UCReviewQ : <<include>>\n(教师可配置自动通过策略)
+UCDup ..> UCSubmitQ : <<extend>>\n扩展点：提交内容格式校验之后\n条件：教师策略≠不监督 且 相似度达到阈值
+
+note bottom of UCSubmitQ
+  UC3-06 与 UC3-07 是**两个独立用况**、两个不同初始参与者
+  （学生投稿 / 教师审核，SRS UC-06），二者之间不是 «include»：
+  审核并非每次投稿实例都必然发生（存在教师配置的自动通过策略），
+  且审核由教师在其自己的时间内发起。二者的先后关系属业务流程，
+  在用况正文的“扩展场景”与后续活动图/顺序图中表达。
+end note
 
 note bottom of UCFork
-  多轮追问（conversation_id 线性对话）已实现，
-  见用况图2；Fork 分支、节点折叠、搜索定位、
-  推荐答案标记无代码支撑（Backlog F06 🟡）
+  多轮追问（conversation_id 线性对话）已实现，见图2-2 UC2-03；
+  Fork 分支、节点折叠、搜索定位、推荐答案标记无代码支撑
+  （时间轴 F06，🟡 部分实现）
 end note
 
 note bottom of UCAudit
   仅存在 ai_access_audit 与 teacher_ai_audit
   两张写入型审计表（CLI/后端写入），
-  无任何查询接口与管理页面（Backlog F12 🟡）
+  无任何查询接口与管理页面（时间轴 F12，🟡）
 end note
 
 note right of UCExam
   SRS F-07 曾定义 /api/v1/exams/* 契约，
   server/ 中无 exam/paper 相关代码
+end note
+
+note bottom of UCQuota
+  当前仅落地“学生日额度”（默认 20 次/学生/教师/上海自然日，
+  见图2-2 UC2-02 约束）；教师默认额度、题目级额度、
+  Token/金额预算与使用统计均为目标功能（时间轴 F08）。
+end note
+
+note bottom of UCNotify
+  时间轴 F13 通知中心（系统通知/审核结果通知/额度告警）与
+  F19 个人中心（含通知消息查看）；接收者为学生、教师与管理员。
+  内容审核（F11）与学习数据分析（F16）分别为 UC3-06/UC2-02
+  与 UC3-16 的内部处理步骤，不单列为活动者可感知的用况。
 end note
 @enduml

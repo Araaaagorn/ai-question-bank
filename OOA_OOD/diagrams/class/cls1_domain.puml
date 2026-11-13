@@ -1,137 +1,187 @@
 @startuml cls1_domain
-' AI+题库智能教学平台 — 类图1：用户与题库领域（分析层对象模型）
-' 说明：后端为 C11 过程式代码，本图为分析层抽象：C 结构体/函数与 kv_store 数据
-'       被抽象为 UML 类；«待实现» 类仅有需求依据（SRS/Backlog），无代码支撑。
-' 依据：server/src/db.c、auth.c、routes.c（题目处理器）、docs/auth.md、docs/questions.md
+' AI+题库智能教学平台 — 图2-4 类图1：用户与题库领域（OOA 分析模型：对象层 + 特征层 + 关系层）
+' 课程依据（第10讲）：
+'   p8  发现对象要考虑系统边界——“发现一些与系统边界以外的参与者进行交互，并且处理系统对外接口的对象”
+'   p13 只有一个属性或一个操作、无独立意义的对象应精简
+'   p14 与实现条件（GUI/DBMS/OS/硬件）有关的对象推迟到 OOD，OOA 模型独立于实现环境
+'   p15 主动对象：边界外参与者直接交互、且第一个处理该交互的对象；也是控制线程的起点
+'   p17 类名用名词/名词性短语，可中英双重命名；已确认的主动对象要标注为主动类
+'   p20 关联用一端的属性（指针/对象标识）表示；紧密固定的聚合在整体对象中定义属性
+'   p21 与实现条件有关的问题（规范化、对象标识、性能）推迟到 OOD
+'   p23 属性的数据类型与取值范围在类规约中说明（枚举作为属性的数据类型，不单独建类建关联）
+'   p28 操作名用动词或动宾结构；通用操作放一般类，专用操作放特殊类
+'   p61/62 聚合判定 6 条；整体与部分生命周期相同者为组合（实心菱形）
+'   p63 关联若带有自己的属性与操作，用关联类（或在两类间插入一个类）表达
+' 说明：后端为 C11 过程式代码，本图为分析层抽象——C 结构体/函数族与 kv 数据被抽象为 UML 类。
+'   属性名沿用代码字段名（模板允许“中文属性名或英文属性名”）；
+'   **操作名一律使用问题域术语（动词/动宾结构），不使用 C 函数名、SQL 语句或 JSON 库类型**，
+'   操作到具体 C 函数的映射见《02》§2.2.2 各操作说明表的“约束条件及其他”列与《03》§3.1.2。
+'   «待实现» 类仅有需求依据（SRS / docs/项目开发时间轴.md 功能清单），无代码支撑。
+' 依据：server/src/{db,auth,routes,http_server}.c、docs/auth.md、docs/questions.md、docs/软件需求说明书.md
 skinparam shadowing false
 skinparam classAttributeIconSize 0
 skinparam class {
   BackgroundColor<<实体类>> #E3F2FD
   BorderColor<<实体类>> #1565C0
+  BackgroundColor<<主动类>> #FCE4EC
+  BorderColor<<主动类>> #AD1457
   BackgroundColor<<值对象>> #F1F8E9
   BorderColor<<值对象>> #558B2F
   BackgroundColor<<待实现>> #FFF3E0
   BorderColor<<待实现>> #E65100
 }
 
-enum "角色 Role" as Role {
-  student
-  teacher
-  admin
+class "平台服务接口 PlatformInterface" as PI <<主动类>> {
+  +listenPort : int
+  +routingMode : String «teacher|platform»
+  --
+  +受理外部请求(方法, 路径, 请求体)
+  +鉴别请求身份(会话令牌)
+  +转交业务对象(用况, 参数)
+  +返回应答(状态码, 结果)
 }
+note bottom of PI
+  **主动类**（第10讲 p15）：边界外参与者发起的交互，
+  第一个处理它的对象，也是控制线程的起点。
+  实现条件推迟到 OOD：设计阶段拆分为 HttpServer /
+  RouteDispatcher / 四个控制器 / StaticFileServer（图3-1）。
+end note
 
 class "用户 User" as User <<实体类>> {
   +id : int
   +username : String
   +name : String
-  +role : Role
-  +passwordHash : String «SHA-256(salt‖pw),固定salt»
+  +role : String «student|teacher|admin»
+  +passwordHash : String «不存明文»
   --
-  +db_create_user(db, username, hash, role) : int
-  +db_query_user_by_username(db, username) : JSON
-  +db_query_password_hash(db, username) : String
-  +db_seed_users(db) : int
+  +{static} 创建用户(用户名, 密码哈希, 角色)
+  +{static} 按用户名查询用户(用户名)
+  +查询密码哈希()
+  +校验密码(明文密码)
+  +{static} 初始化演示账号()
 }
 note bottom of User
-  持久化：kv_store namespace "users"
-  → SQLite 表 users(key_name, value_name, value)
-  复合主键 (key_name, value_name)
+  role 为枚举数据类型，按第10讲 p23 以“数据类型+取值范围”
+  在属性栏标注，不单独建枚举类、不与类建立关联。
+  持久化映射属 OOD 数据管理部分（kv 命名空间 users）。
 end note
 
-class "管理员 Administrator" as Admin <<实体类>>
-class "教师 Teacher" as Teacher <<实体类>>
-class "学生 Student" as Student <<实体类>>
+class "管理员 Administrator" as Admin <<实体类>> {
+  --
+  +管理用户()
+  +查询审计日志()
+}
+class "教师 Teacher" as Teacher <<实体类>> {
+  --
+  +维护题目()
+  +配置AI接口()
+}
+class "学生 Student" as Student <<实体类>> {
+  --
+  +提交题目()
+  +发起追问()
+}
 User <|-- Admin
 User <|-- Teacher
 User <|-- Student
 note right of Admin
-  分析层按角色泛化；
-  代码实现为 User.role 字段
-  + 路由层角色判断
-  （routes.c / teacher_api_routes.c）
+  泛化的审查与调整（第10讲 p53/p56）：三个特殊类无新增属性，
+  特殊性体现在**系统责任与专用操作**（p28 通用操作放一般类、
+  专用操作放特殊类）：教师→题目维护与 AI 接口自管（A2、B7）；
+  学生→投稿与追问并受日额度约束（A12、B12）；
+  管理员→演示数据归属、全角色写权限与目标功能（图2-3）。
+  操作实现状态：教师.维护题目 ✅、教师.配置AI接口 ✅、
+  学生.发起追问 ✅；学生.提交题目 ⬜、管理员两项 ⬜/🟡。
+  代码以 User.role 判别字段 + 路由守卫实现（未用继承），
+  该差异在 OOD 问题域设计中说明（第13讲 p53 展平）。
 end note
 
 class "登录会话 Session" as Session <<实体类>> {
-  +token : char[64] «OpenSSL随机十六进制»
+  +token : String «随机 64 位十六进制»
   +userId : int
   +role : String
   +name : String
-  +expiresAt : time_t «now+86400»
+  +expiresAt : 时间 «创建时刻 + 24h»
   +active : bool
   --
-  +{static} session_create(userId, role, name) : const char*
-  +{static} session_validate(token) : Session*
-  +{static} session_destroy(token) : void
-  +{static} extract_bearer_token(header) : const char*
+  +{static} 创建会话(用户标识, 角色, 显示名)
+  +{static} 校验会话(令牌)
+  +{static} 销毁会话(令牌)
+  +{static} 清理过期会话()
 }
 note bottom of Session
-  服务端内存数组 g_sessions[128]，
-  每 16 次创建触发一次压缩清理；
-  仅单线程 demo 模式，重启即失效
+  仅存服务端内存（128 槽，每 16 次创建触发一次清理），
+  重启即失效——设计约束而非缺陷。userId 实现关联 A1 的反向链（p20）。
+  “从请求头提取 Bearer 令牌”属实现条件相关操作，
+  按 p14 推迟到 OOD（图3-1 SessionManager）。
 end note
-
-enum "题型 QuestionType" as QType {
-  single_choice
-  short_answer
-}
-enum "题目状态 QuestionStatus" as QStatus {
-  active
-  archived «预留,无API可写»
-}
 
 class "题目 Question" as Question <<实体类>> {
   +id : int
   +content : String
-  +type : QuestionType
+  +type : String «single_choice|short_answer»
   +options : Option[]
   +answer : String
-  +analysis : String
-  +knowledgePoints : String[]
-  +teacherId : int «归属教师,seed题为1(admin)»
-  +status : QuestionStatus
-  +seedKey : String «内部幂等键,不对外»
+  +analysis : String «0..1»
+  +knowledgePoints : String «0..*»
+  +teacherId : int «seed 题为 1(admin)»
+  +status : String «active|archived»
+  +seedKey : String «0..1，内部幂等键，不对外»
   --
-  +validate() : bool «content/type/answer/options一致性»
-  +toJSON() : cJSON*
+  +{static} 创建题目(题干, 题型, 选项, 答案, 解析, 知识点, 归属教师)
+  +校验字段()
+  +更新字段(待更新字段集)
+  +归档()
+  +删除()
+  +组装题目信息()
 }
 note bottom of Question
-  持久化：kv_store namespace "qdata"
-  → SQLite 表 qdata(key_name=题目id, value_name=字段名)
-  写接口仅 teacher/admin；id=当前最大id+1
+  type / status 为枚举数据类型，取值标注在属性栏
+  （archived 为预留值：字段存在但当前无接口可写，见图2-11）。
+  knowledgePoints 为字符串数组属性，分析阶段不再单设“知识点”
+  值对象类（p13 精简；且会与本属性重复定义同一信息）；
+  目标设计的独立“标签 Tag”实体见下方目标领域对象包。
+  options 为内嵌值对象、生命周期随题目 → 组合（实心菱形）。
+  teacherId 实现关联 A2 的反向链。持久化映射属 OOD（kv qdata）。
 end note
 
 class "选项 Option" as Option <<值对象>> {
-  +label : String
+  +label : String «A/B/C/D»
   +text : String
 }
-class "知识点 KnowledgePoint" as KP <<值对象>> {
-  +name : String
-}
 
-User "1" -- "0..*" Session : 登录创建 >
-Teacher "1" -- "0..*" Question : teacherId 归属 >
-Question *-- "0..*" Option : JSON 内嵌(组合)
-Question o-- "0..*" KP : knowledge_points\n字符串数组(聚合)
-Question --> QType
-Question --> QStatus
-User --> Role
+Question "1" *-- "0..*" Option : A3 选项内嵌 >
 
-package "目标领域对象（需求有描述，当前无代码支撑）" {
+User "1" -- "0..*" Session : A1 登录创建 >
+Teacher "1" -- "0..*" Question : A2 归属 >
+PI ..> User : D1 鉴别身份 <<use>>
+PI ..> Session : D2 创建与校验会话 <<use>>
+PI ..> Question : D3 转交题目用况 <<use>>
+
+package "目标领域对象（需求有描述，当前无代码支撑 ⬜）" {
   class "题库 QuestionBank" as Bank <<待实现>> {
     +id : int
     +name : String
     +teacherId : int
+    --
+    +创建题库()
+    +组织题目()
   }
   class "标签 Tag" as Tag <<待实现>> {
     +id : int
     +name : String
+    --
+    +绑定题目()
   }
   class "试卷 Paper" as Paper <<待实现>> {
     +id : int
     +name : String
-    +description : String
+    +description : String «0..1»
     +teacherId : int
     +status : String
+    --
+    +创建试卷()
+    +导出试卷()
   }
   class "试卷题目 PaperQuestion" as PaperQ <<待实现>> {
     +order : int
@@ -141,17 +191,23 @@ package "目标领域对象（需求有描述，当前无代码支撑）" {
     +id : int
     +studentId : int
     +content : String
-    +status : pending/approved/rejected
+    +status : String «pending|approved|rejected»
+    +reviewComment : String «0..1»
+    --
+    +提交()
+    +审核()
   }
 }
-Bank "1" o-- "0..*" Question : 目标:题库组织题目
-Question "1" -- "0..*" Tag : 目标:多对多
-Paper "1" *-- "1..*" PaperQ
-PaperQ "0..*" --> "1" Question
-Student "1" -- "0..*" Sub : 目标:学生投稿
+Bank "1" o-- "0..*" Question : A8 题库组织题目 >
+Question "0..*" -- "0..*" Tag : A9 题目标签
+Paper "1" *-- "1..*" PaperQ : A10 试卷题目 >
+PaperQ "0..*" --> "1" Question : A11 引用题目 >
+Student "1" -- "0..*" Sub : A12 学生投稿 >
 note bottom of Bank
-  当前题目仅以 teacher_id 扁平归属，
-  无独立题库实体；试卷/提交审核见
-  docs/项目Backlog.md F03/F04（⬜ 待办）
+  PaperQuestion 是“试卷—题目”关联上的**关联类**（p63：该关联
+  带有自己的属性 order 与 score）。当前题目仅以 teacherId 扁平
+  归属，无独立题库实体；试卷/投稿审核见 docs/项目开发时间轴.md
+  F03/F04（⬜）。A9 为多对多关联，其转化属 OOD 问题域设计
+  活动（第13讲 p62），本分析图保留 m:n 原貌。
 end note
 @enduml

@@ -1,69 +1,97 @@
 @startuml seq1_login
-' 顺序图1：用户登录与身份认证
-' 依据：web/js/auth.js+api.js、server/src/routes.c(handle_login/handle_register)、
-'       server/src/auth.c、server/src/db.c（经 kv_store 读 users）
+' AI+题库智能教学平台 — 图2-6 顺序图1：用户登录与身份认证（OOA 分析层）
+' 课程依据（第11讲）：
+'   p6  对象表示法为“[对象名] : 类名”；生命线为垂直虚线
+'   p7  执行规约（激活条）：顶端画在进入箭头的尖端，底端画在返回箭头的尾部
+'   p9  同步消息的返回可省略；需标识返回值时显式画在返回箭头上
+'   p16-19 用 opt / alt / loop 组合片段表达可选、条件与迭代，不用交叉消息线代替逻辑结构
+'   p20 建立顺序图：设置语境 → 上部列出对象并给出类名、设生命线，发起交互的对象放左边
+'   p21 同一控制线程内，接收者的执行规约应在发送者发出消息之后开始、在其结束之前结束
+' 第10讲 p14：与 GUI、DBMS 等实现条件有关的对象不进入 OOA 模型。
+'   故本图**不含**登录页/API 客户端（人机交互部分）与 KV 存储层/SQLite（数据管理部分）；
+'   这些设计对象及其消息见 OOD 图3-10（登录与身份认证设计顺序图）、图3-1 与图3-6。
+' 说明：消息名与图2-4 类图的操作一一对应；pi 为主动对象（控制线程起点）。
+' 依据：server/src/{routes,auth,db}.c、docs/auth.md、docs/软件需求说明书.md UC-01
 autonumber
 skinparam shadowing false
+' 课程格式（第11讲 p6）：对象只在顺序图**顶部**标注一次（[对象名] : 类名）；
+' 下方不再重复绘制对象框与对象名，故关闭 PlantUML 默认的底部 footbox。
+hide footbox
 
 actor "用户\n(学生/教师/管理员)" as U
-boundary "登录页 AuthPage\n(web/js/auth.js)" as UI
-boundary "API客户端\n(web/js/api.js)" as API
-control "路由分发器\nroute_dispatch\n(routes.c)" as RD
-control "认证控制器\nhandle_login\n(routes.c)" as CL
-entity "会话管理\nauth.c" as SESS
-entity "KV存储层\nkv_store.c\n(namespace users)" as KV
-database "SQLite\nusers 表" as DB
+participant "pi : 平台服务接口" as PI <<主动类>>
+participant "user : 用户" as USER
+participant "session : 登录会话" as SESS
 
-U -> UI : 输入用户名/密码并提交
-UI -> API : API.login(username, password)
-API -> RD : POST /api/v1/auth/login\n{"username","password"}
-RD -> CL : 匹配 url+method 后调用
+== 登录（用况 UC1-02） ==
+U -> PI : 登录(用户名, 密码)
+activate PI
+PI -> USER : 校验密码(密码)
+activate USER
+USER --> PI : 校验结果（用户不存在或哈希不匹配均为“不通过”）
+deactivate USER
 
-CL -> CL : cJSON_Parse 解析请求体
-opt 请求体为空/JSON非法/缺字段
-  CL --> API : 400 {"error":"缺少 username 或 password"}
-end
-
-CL -> KV : db_query_password_hash(username)\n= kv_get("users", username, "password_hash")
-KV -> DB : SELECT value FROM users\nWHERE key_name=? AND value_name=?
-DB --> KV : 存储的哈希 或 无记录
-KV --> CL : stored_hash 或 NULL
-
-alt 用户不存在 或 SHA-256(salt‖pw) 不匹配
-  CL --> API : 401 {"error":"用户名或密码错误"}\n（不区分原因，防枚举）
-  API --> UI : 抛错
-  UI --> U : 登录页显示错误提示
+alt 用户不存在 或 密码校验不通过
+  PI --> U : 拒绝登录（统一提示“用户名或密码错误”，不区分原因以防枚举）
 else 校验通过
-  CL -> KV : db_query_user_by_username(username)\n= kv_get_all("users", username)
-  KV --> CL : {id, username, name, role}
-  CL -> SESS : session_create(user_id, role, name)
-  SESS -> SESS : OpenSSL RAND_bytes 生成 64 位十六进制 token\nexpires_at = now + 86400\n每16次创建触发一次 session_cleanup()
-  alt 会话槽耗尽且清理后仍不足 / 随机源失败
-    SESS --> CL : NULL
-    CL --> API : 500 {"error":"创建会话失败"}
+  PI -> SESS : 创建会话(用户标识, 角色, 显示名)
+  activate SESS
+  alt 会话槽位耗尽且清理后仍不足
+    SESS --> PI : 创建失败
+    deactivate SESS
+    PI --> U : 服务暂不可用，请稍后重试
   else 创建成功
-    SESS --> CL : token
-    CL --> API : 200 {"token", "user":{id,username,name,role}}
-    API -> API : setAuth(token, user)\nlocalStorage（file:// 下降级内存）
-    API --> UI : 返回登录结果
-    UI --> U : 跳转 #questions 题目列表页
+    SESS --> PI : 会话令牌（有效期 24 小时）
+    deactivate SESS
+    PI --> U : 登录成功（会话令牌 + 用户信息）
   end
 end
+deactivate PI
 
-== 附：注册（POST /api/v1/auth/register，201 后自动登录） ==
-U -> UI : 注册页填写（前端仅开放 student/teacher）
-UI -> API : API.register(username, password, confirm, role)
-API -> RD : POST /api/v1/auth/register
-RD -> CL : handle_register
-CL -> CL : 校验：用户名非空、两次密码一致、\n≥8位且含字母和数字、role∈{student,teacher,admin}
-opt 校验失败
-  CL --> API : 400（对应错误文案）
-end
-CL -> KV : db_create_user(db, username, hash, role)
-alt 用户名已存在
-  CL --> API : 409 {"error":"用户名已存在"}
+== 注册（用况 UC1-01，注册成功即自动登录） ==
+U -> PI : 注册(用户名, 密码, 确认密码, 角色)
+activate PI
+PI -> USER : 创建用户(用户名, 密码, 角色)
+activate USER
+note right of USER
+  创建用户的前置条件（由该操作内部校验）：
+  用户名非空且未被占用；两次密码一致；
+  密码 ≥8 位且同时含字母和数字；
+  角色 ∈ {student, teacher, admin}
+  （前端注册页仅开放 student/teacher）。
+  密码仅以哈希形式保存，不存明文。
+end note
+alt 注册信息非法 或 用户名已存在
+  USER --> PI : 创建失败（具体原因）
+  deactivate USER
+  PI --> U : 拒绝注册（返回具体原因）
 else 创建成功
-  CL -> SESS : session_create(...)（与登录同一控制流）
-  CL --> API : 201 {"token","user"}（注册即登录）
+  USER --> PI : 新用户
+  PI -> SESS : 创建会话(用户标识, 角色, 显示名)
+  activate SESS
+  SESS --> PI : 会话令牌
+  deactivate SESS
+  PI --> U : 注册成功并处于登录态
 end
+deactivate PI
+
+== 登出（用况 UC1-03） ==
+U -> PI : 登出(会话令牌)
+activate PI
+PI -> SESS : 销毁会话(令牌)
+activate SESS
+SESS --> PI : 已销毁（令牌无效时静默成功）
+deactivate SESS
+PI --> U : 登出成功
+deactivate PI
+
+note over PI, SESS
+  本图全部消息位于同一控制线程内：pi 是主动对象（控制线程起点），
+  user 与 session 是被动对象，其执行规约均在 pi 的执行规约之内
+  开始与结束（第11讲 p21）。
+  “清理过期会话()”是登录会话的类范围操作，每 16 次创建会话触发一次，
+  属对象自身的内部行为，不在本交互中单列消息。
+  查询当前用户信息（UC1-04）为只读用况：pi 校验会话后直接返回
+  用户标识、用户名、显示名与角色，不改变任何对象状态，故未单独作图。
+end note
 @enduml
