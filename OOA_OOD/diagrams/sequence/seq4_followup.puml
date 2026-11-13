@@ -1,0 +1,124 @@
+@startuml seq4_followup
+' AI+题库智能教学平台 — 图2-9 顺序图4：学生追问形成多轮对话（OOA 分析层）
+' 课程依据（第11讲 p6/p7/p9/p10/p13/p16-21；第10讲 p14 OOA 不含 GUI 与 DBMS 对象）
+'   本图不含对话页/Pi 任务客户端（人机交互部分）、对话代理控制器/Pi 内部接口（控制驱动部分的设计拆分）；
+'   对话对象的锁、历史边界与凭证作用域状态语义见 OOD 图3-8（设计状态图），
+'   设计层消息与事务见 OOD 图3-7。
+' 第3讲 p63：本用况是“提交 AI 解答任务”的 «extend»（扩展点：提交题目与教学模式之后；
+'   扩展条件：请求携带本用户有效对话标识），因此前段校验与扣次与图2-8 阶段 2 相同，本图不再重复绘制。
+' 说明：消息名与图2-4/图2-5 类图操作一一对应；跨控制流（CF2 → CF4/CF5）消息用异步箭头。
+' 依据：ai-service/src/jobs.ts（受理校验链）、web/js/chat.js（按“题目+模式”隔离对话标识）、
+'       docs/pi-chat-api.md §6；Fork 分支/节点折叠/推荐标记为 ⬜ 目标功能（SRS F-11）
+autonumber
+skinparam shadowing false
+' 课程格式（第11讲 p6）：对象只在顺序图**顶部**标注一次（[对象名] : 类名）；
+' 下方不再重复绘制对象框与对象名，故关闭 PlantUML 默认的底部 footbox。
+hide footbox
+
+actor "学生" as S
+participant "pi : 平台服务接口" as PI <<主动类>>
+participant "session : 登录会话" as SESS
+participant "tapi : 教师API配置" as TAPI
+participant "quota : 日额度使用" as QUOTA
+participant "jobs : 任务队列" as JOBS <<主动类>>
+participant "conv : 对话" as CONV
+participant "job : AI解答任务" as JOB
+participant "agent : Agent执行器" as AGENT <<主动类>>
+
+== 追问受理（用况 UC2-03，扩展 UC2-02） ==
+S -> PI : 同题追问(题目标识, 问题, 对话标识)
+activate PI
+PI -> SESS : 校验会话(令牌)
+activate SESS
+SESS --> PI : 会话（含角色）或“无效”
+deactivate SESS
+PI -> TAPI : 解析可用凭证(用户, 角色, 题目, 是否扣次 = 是)
+activate TAPI
+TAPI -> QUOTA : 扣减一次()
+activate QUOTA
+QUOTA --> TAPI : 扣次成功（追问同样计 1 次）
+deactivate QUOTA
+TAPI --> PI : 可用凭证（凭证作用域 = 教师标识 : 配置版本）
+deactivate TAPI
+
+PI -> JOBS : 受理任务(提交请求，含对话标识)
+activate JOBS
+JOBS -> CONV : 校验追问受理(教学模式)
+activate CONV
+CONV --> JOBS : 受理结论（允许，或拒绝并附原因）
+deactivate CONV
+alt 对话不存在 / 归属他人 / 绑定其他题目
+  JOBS --> PI : 拒绝（对话不存在）
+else 教师配置版本已变化，凭证作用域不一致
+  JOBS --> PI : 拒绝（凭证已变更）
+else 同一对话内切换教学模式
+  JOBS --> PI : 拒绝（教学模式不一致）
+else 同一对话已有任务进行中
+  JOBS --> PI : 拒绝（对话占用中）
+else 历史超过 12 轮成功提问或 64KB
+  JOBS --> PI : 拒绝（对话已达上限）
+else 校验通过
+  JOBS -> JOBS : 重算提示层级（hint 模式 1→2→3；失败与取消不升级）
+  JOBS -> JOB : <<create>> 创建任务(归属用户, 教学上下文)
+  activate JOB
+  JOB --> JOBS : 任务（状态 = 排队中）
+  deactivate JOB
+  JOBS -> CONV : 占用任务锁(任务标识)
+  activate CONV
+  deactivate CONV
+  JOBS --> PI : 受理视图（新任务标识；对话标识不变）
+end
+deactivate JOBS
+PI --> S : 受理结果（已受理并异步执行 / 被拒并说明处置方式：\n对话不存在或凭证变更需新建对话，占用中需等待，达上限需新建对话）
+deactivate PI
+
+== 异步执行（任务队列主动推进，位于控制流 CF4/CF5） ==
+activate JOBS
+JOBS -> JOBS : 调度出队任务()
+JOBS -> JOB : 置为执行中()
+activate JOB
+deactivate JOB
+JOBS ->> AGENT : 启动执行(执行配置, 提交请求, 对话历史, 教学上下文)
+activate AGENT
+AGENT -> AGENT : 恢复完整对话历史（含工具调用消息对）后执行模型与工具循环
+AGENT -->> JOBS : 解答结果（回复、用量、消息集）
+deactivate AGENT
+alt 执行成功
+  JOBS -> JOB : 置为成功(解答结果)
+  activate JOB
+  deactivate JOB
+  JOBS -> CONV : 追加对话历史(消息集)
+  activate CONV
+  deactivate CONV
+else 执行失败或被取消
+  JOBS -> JOB : 置为失败(错误信息)
+  activate JOB
+  deactivate JOB
+end
+JOBS -> CONV : 释放任务锁()
+activate CONV
+deactivate CONV
+deactivate JOBS
+
+== 获取追问答复（用况 UC2-04） ==
+loop 客户端每隔 800 毫秒查询一次，最长等待 45 秒
+  S -> PI : 查询AI任务状态(任务标识)
+  activate PI
+  PI -> JOBS : 查询任务(任务标识, 归属用户)
+  activate JOBS
+  JOBS --> PI : 任务视图
+  deactivate JOBS
+  PI --> S : 追问答复（对话标识不变，可继续追问）
+  deactivate PI
+end
+
+note over JOBS, CONV
+  失败与取消**不追加**本轮对话历史，但同样释放任务锁，
+  因此提示层级不会因失败轮次而升级（见图2-5 教学上下文）。
+  对话的“最近活跃时刻”在每次受理与终态收尾时更新，作为 TTL 清理依据
+  （状态语义见图3-8）。
+  当前对话是“用户 + 题目 + 教学模式”维度上的**线性多轮**结构；
+  需求中的 Fork 分支、节点折叠、搜索定位与推荐答案标记
+  （SRS F-11）⬜ 无代码支撑，属目标功能，见图2-3 UC3-10。
+end note
+@enduml

@@ -1,0 +1,106 @@
+@startuml seq5_teacher_api_config
+' AI+题库智能教学平台 — 图2-10 顺序图5：教师配置本人的 AI 接口（OOA 分析层，v1.3 默认 teacher 模式）
+' 课程依据（第11讲 p6/p7/p9/p16-21；第10讲 p14 OOA 不含 GUI 与 DBMS 对象）
+'   本图不含“客户端/未来配置页”（人机交互部分）与教师API路由/教师API服务/SQLite
+'   （控制驱动与数据管理部分的设计拆分）；加密算法、审计表、事务边界与脱敏回显的
+'   语句级顺序见 OOD 图3-12（教师 API 配置设计顺序图）与图3-6。
+' 说明：消息名与图2-4/图2-5 类图 Session / TeacherApiConfig / TeacherApiAudit 的操作一一对应；
+'       对象状态变迁见图2-13（教师 AI API 配置生命周期）。
+'       前端已提供教师 API 配置页（#teacher-api，web/js/teacher-api.js 的 TeacherApiPage，
+'       上游 #25 实现），其界面类与数据管理细节见 OOD 图3-2 / 图3-3 / 图3-12。
+' 依据：server/src/teacher_api_routes.c、teacher_api.c、docs/teacher-api.md
+autonumber
+skinparam shadowing false
+' 课程格式（第11讲 p6）：对象只在顺序图**顶部**标注一次（[对象名] : 类名）；
+' 下方不再重复绘制对象框与对象名，故关闭 PlantUML 默认的底部 footbox。
+hide footbox
+
+actor "教师" as T
+participant "pi : 平台服务接口" as PI <<主动类>>
+participant "session : 登录会话" as SESS
+participant "tapi : 教师API配置" as TAPI
+participant "audit : 教师API审计" as AUDIT
+
+== 配置教师 AI 接口（用况 UC2-07） ==
+T -> PI : 配置教师AI API(密钥, 模型)
+activate PI
+PI -> SESS : 校验会话(令牌)
+activate SESS
+SESS --> PI : 会话（含角色）或“无效”
+deactivate SESS
+alt 会话无效
+  PI --> T : 拒绝（未登录或登录已过期）
+else 角色为学生或管理员
+  PI --> T : 拒绝（仅教师可配置本人的 AI 接口）
+else 角色为教师
+  PI -> TAPI : 保存配置(教师, 密钥, 模型, 启用)
+  activate TAPI
+  TAPI -> TAPI : 校验密钥与模型格式
+  note right of TAPI
+    密钥长度与字符集受限；模型名长度与字符集受限；
+    只接受白名单字段，拒绝重复字段。
+  end note
+  alt 格式非法
+    TAPI --> PI : 拒绝（参数非法）
+  else 格式合法
+    TAPI -> TAPI : 加密密钥并递增配置版本
+    TAPI -> AUDIT : 记录配置变更(教师, 版本, 动作 = 配置或启用)
+    activate AUDIT
+    deactivate AUDIT
+    TAPI --> PI : 保存成功
+  end
+  deactivate TAPI
+  PI -> TAPI : 生成脱敏元数据(教师)
+  activate TAPI
+  TAPI --> PI : 脱敏配置（是否已配置、是否启用、模型、脱敏密钥、版本、更新时间）
+  deactivate TAPI
+  PI --> T : 配置结果（成功则回显脱敏配置，绝不回显完整密钥或密文）
+end
+deactivate PI
+
+== 启停教师 API 配置（用况 UC2-09） ==
+T -> PI : 启停教师API配置(启用)
+activate PI
+PI -> SESS : 校验会话(令牌)
+activate SESS
+SESS --> PI : 会话（含角色）或“无效”
+deactivate SESS
+PI -> TAPI : 启停配置(教师, 启用)
+activate TAPI
+alt 配置不存在
+  TAPI --> PI : 拒绝（尚未配置）
+else 配置存在
+  TAPI -> TAPI : 解密原密钥后重新加密存储，并递增配置版本
+  TAPI -> AUDIT : 记录配置变更(教师, 版本, 动作 = 停用 / 配置或启用)
+  activate AUDIT
+  deactivate AUDIT
+  TAPI --> PI : 启停成功
+end
+deactivate TAPI
+PI --> T : 启停结果（成功则回显脱敏配置）
+deactivate PI
+
+== 查询教师 API 配置（用况 UC2-08，只读且只回脱敏信息） ==
+T -> PI : 查询教师API配置()
+activate PI
+PI -> SESS : 校验会话(令牌)
+activate SESS
+SESS --> PI : 会话（含角色）或“无效”
+deactivate SESS
+PI -> TAPI : 生成脱敏元数据(教师)
+activate TAPI
+TAPI --> PI : 脱敏配置
+deactivate TAPI
+PI --> T : 脱敏配置（学生与管理员调用本用况一律拒绝）
+deactivate PI
+
+note over PI, AUDIT
+  本图全部消息位于同一控制线程（CF2）内：pi 为主动对象，
+  session / tapi / audit 为被动对象，其执行规约均嵌套在 pi 的执行规约之内。
+  业务影响（见图2-13、图3-8）：停用后学生新提交的解答请求被拒绝，
+  但已受理任务仍可查询与取消；配置版本递增会使存量对话的凭证作用域失效，
+  追问被拒并需新建对话。
+  审计对象只提供“记录配置变更”，与保存/启停在同一事务内追加（事务细节属
+  数据管理部分，见 OOD 图3-12）；当前审计仅有写入、无查询接口（🟡，见图2-3 UC3-14）。
+end note
+@enduml

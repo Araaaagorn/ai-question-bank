@@ -1,0 +1,111 @@
+@startuml ood8_design_packages
+' AI+题库智能教学平台 — 图3-9 OOD 设计包图：设计模型的包组织（四部分设计）
+' 模板 §3.4：“经过面向对象设计后，类图变得更加庞大和复杂，可通过一定的原则将类图的元素
+'   划分为不同的包，并进行文字说明，格式同 2.5 部分。”
+' 与图2-14（OOA 包图，按业务子系统划分**分析模型元素**）的区别：本图按 OOD 四部分设计原则
+'   组织**设计类图的类**（图3-1），并标注与物理模块的映射。
+' 课程依据：第13讲 p17-19（OOD 模型 = 问题域 + 人机交互 + 控制驱动 + 数据管理，尽可能隔离
+'   实现条件的影响）；第14讲 p3（控制驱动部分由全部主动类构成）、p16（<<process>>/<<thread>>
+'   表示法）、p24（数据管理部分隔离 DBMS 的影响）；第10讲 p70/p85（包间使用关系用依赖 <<use>>）。
+' 本次修订：① 与图3-1 同步补入设计新增的一般类 Page（第13讲 p45 增加一般类以建立共同协议）；
+'   ② 控制驱动部分标出主动类（<<thread>>/<<process>>），与图3-5 的控制流 CF2~CF5 对应；
+'   ③ 数据管理部分的类改标 «数据管理类»（原图沿用 «控制类» 与四部分划分矛盾）；
+'   ④ 包间与类间的调用关系统一改为依赖 <<use>> 虚线（第13讲 p69：参数/局部/全局可见性→依赖），
+'      仅保留内存登记表持有关系为聚合。
+' 依据：图3-1 设计类图、docs/architecture.md、web/js/、server/src/、ai-service/src/
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam package {
+  BackgroundColor #FAFAFA
+}
+
+package "人机交互部分\n（边界类；物理映射 web/js/*.js，纯静态无构建链）" as PHCI {
+  [Page（设计新增的一般类，⬜ 设计抽象）] as H0
+  [AuthPage / RegisterPage] as H1
+  [QuestionsPage / ChatPage] as H2
+  [API / PiChatClient（服务封装）] as H3
+  [TeacherApiPage（#teacher-api，✅ 已实现）] as H4
+  H0 <-- H1
+  H0 <-- H2
+}
+
+package "控制驱动部分\n（控制类；主动类以 <<thread>>/<<process>> 标注）" as PCtrl {
+  package "CF2 C 后端（server/，单轮询线程）" as PC1 {
+    [HttpServer <<thread>>] as C1
+    [RouteDispatcher / StaticFileServer] as C1b
+    [AuthController / QuestionController /\nChatProxyController / TeacherApiRoutes] as C2
+    [AiClient] as C3
+  }
+  package "CF3~CF5 Pi 服务（ai-service/，独立进程）" as PC2 {
+    [InternalJobApi <<process>>] as P1
+    [Jobs <<thread>>（CF4 任务泵）] as P1b
+    [AgentRunner <<thread>>（CF5 每任务执行流）] as P2
+  }
+}
+
+package "问题域部分\n（实体类；定义详见图2-4 / 图2-5，此处为设计细化与引用）" as PDomain {
+  [User / Session / Question / Option] as D1
+  [Conversation / ChatJob / Completion /\nUsage / TeachingContext] as D2
+  [TeacherApiConfig / TeacherExecution（设计新增）] as D3
+}
+
+package "数据管理部分\n（数据管理类；隔离 DBMS 的影响）" as PData {
+  [SessionManager（内存会话，不持久化）] as M0
+  [KvStore / DbSeed（users、qdata）] as M1
+  [TeacherApiService（teacher_ai_*）/\nAiAccessService（ai_access_*）] as M2
+  database "SQLite\nai_question_bank.db" as DB
+}
+
+cloud "外部系统：AI 模型供应商" as MP
+package "带外通道（不属于四部分）" as POps {
+  [运维授权 CLI scripts/ai_access.py\n（CF6，仅 platform 兼容模式）] as CLI
+}
+
+PHCI ..> PCtrl : <<use>> HTTP/JSON /api/v1/*（Bearer 令牌）\nCF1 ↔ CF2：远程过程调用
+PCtrl ..> PDomain : <<use>> 创建与操纵领域对象
+PCtrl ..> PData : <<use>> 持久化与短写事务（BEGIN IMMEDIATE）
+PDomain ..> PData : <<use>> 永久类 ↔ 表映射
+C3 ..> P1 : <<use>> 内部 HTTP（短超时同步）+ 邮箱式异步（202 后轮询）
+P1 ..> P1b : <<use>>
+P1b ..> P2 : <<use>> 异步任务调度（CF4 → CF5）
+P2 ..> MP : <<use>> 模型调用（教师 / 平台密钥）
+M0 ..> DB : 不访问（仅内存）
+M1 ..> DB : <<use>>
+M2 ..> DB : <<use>>
+CLI ..> DB : <<use>> 共享存储器（可信服务器直写，授权与审计同事务）
+
+note bottom of PHCI
+  界面类只负责输入收集、令牌存储、轮询提示与安全渲染，
+  业务请求一律转发给控制驱动部分；全图无问题域/数据管理
+  指向人机交互的依赖，符合第13讲 p97 的隔离原则。
+  Page 为设计阶段按“增加一般类以建立共同协议”提取的抽象
+  （五个页面模块 AuthPage/RegisterPage/QuestionsPage/ChatPage/
+  TeacherApiPage 均已实现同名 show() 入口），代码中尚未提取基类。
+end note
+note bottom of PCtrl
+  只有 HttpServer、InternalJobApi、Jobs、AgentRunner 是主动类；
+  RouteDispatcher、四个控制器、AiClient 为 CF2 内被同步调用的
+  被动控制类（第14讲 p14：过度并发反而损失效率与正确性）。
+  控制流清单、识别理由与通信机制见图3-5 与《03》§3.1.6.3。
+end note
+note bottom of PDomain
+  设计阶段对问题域的调整：① 角色泛化压平为 User.role 判别字段
+  （C11 不支持继承，第13讲 p53）；② 新增 TeacherExecution 承载
+  解密后短暂驻留的明文凭证并负责擦除；③ 不新增领域实体字段；
+  ④ ⬜ 目标设计类（QuestionBank/Tag/Paper/PaperQuestion/Submission）
+  保留在 OOA 图2-4，不进入可实现的设计模型。
+end note
+note bottom of PData
+  采用第14讲 p45 的**方案2**：由专门的数据管理类统一负责存储与检索，
+  问题域类不含 SQL。users/qdata 为 EAV 键值行通用表，
+  teacher_ai_* 与 ai_access_* 为“一属性一列”的规范关系表；
+  规范化取舍与表结构详见图3-6 与《03》§3.1.6.4。
+  Session / Conversation / ChatJob 不持久化（设计约束）。
+end note
+note bottom of POps
+  依赖方向单向：人机交互 → 控制驱动 → {问题域, 数据管理}，
+  问题域 → 数据管理，**全图无循环依赖**。
+  运维 CLI 与 scripts/、deploy/、.github/ 属带外通道与协作基础设施，
+  不进入四部分设计包，仅在此标出以说明其与共享存储器的关系。
+end note
+@enduml

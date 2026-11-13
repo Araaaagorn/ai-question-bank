@@ -1,0 +1,137 @@
+@startuml pkg1_system
+' AI+题库智能教学平台 — 图2-14 包图1：OOA 分析模型的包组织
+' 课程与模板依据：
+'   模板 §2.5：“为了管理模型的信息组织的复杂性，在比较复杂的模型中，通常将关系联系
+'     比较密切的**建模元素**划分到一个包里面（如一个子系统中的所有元素）。最常见的是
+'     在用况图和类图中使用包图。”→ 包内元素必须是能在用况图/类图中找到的建模元素。
+'   第10讲 p3：包图是 OOA 的**辅助模型**，用于帮助理解类图。
+'   第10讲 p70/p85：包间关系用依赖 <<use>>（虚线枝形箭头）表达使用关系。
+' 本次修订（重要）：原图把包内元素画成**源码模块/构件**（route_dispatch、kv_store.c、
+'   agent.ts、systemd 等），既不在任何 OOA 类图中出现，也属于实现与部署视角，
+'   不符合模板 §2.5 与第10讲 p14“OOA 模型独立于实现环境”。现改为按业务子系统
+'   划分**分析模型元素**（类名与图2-4/图2-5 完全一致）；源码模块与物理目录的
+'   映射保留为包注释，并移至 OOD 图3-9（设计包图）与《03》§3.4 说明。
+' 依据：图2-4 cls1_domain.puml、图2-5 cls2_ai.puml、图2-1~图2-3 用况图、docs/architecture.md
+skinparam shadowing false
+skinparam package {
+  BackgroundColor #FAFAFA
+}
+skinparam class {
+  BackgroundColor<<主动类>> #FCE4EC
+  BorderColor<<主动类>> #AD1457
+  BackgroundColor<<待实现>> #FFF3E0
+  BorderColor<<待实现>> #E65100
+}
+
+package "任务调度（主动类）" as PSched {
+  class "平台服务接口\nPlatformInterface" as PI <<主动类>>
+  class "任务队列\nJobs" as Jobs <<主动类>>
+  class "Agent执行器\nAgentRunner" as Agent <<主动类>>
+}
+
+package "用户与会话" as PUser {
+  class "用户 User" as User
+  class "管理员 Administrator" as Admin
+  class "教师 Teacher" as Teacher
+  class "学生 Student" as Student
+  class "登录会话 Session" as Session
+  User <|-- Admin
+  User <|-- Teacher
+  User <|-- Student
+}
+
+package "题库" as PQ {
+  class "题目 Question" as Question
+  class "选项 Option" as Option
+  Question "1" *-- "0..*" Option
+  package "目标领域对象 ⬜" as PQTarget {
+    class "题库 QuestionBank" as Bank <<待实现>>
+    class "标签 Tag" as Tag <<待实现>>
+    class "试卷 Paper" as Paper <<待实现>>
+    class "试卷题目 PaperQuestion" as PaperQ <<待实现>>
+    class "学生提交 Submission" as Sub <<待实现>>
+  }
+}
+
+package "AI 解答" as PAI {
+  class "对话 Conversation" as Conv
+  class "AI解答任务 ChatJob" as Job
+  class "解答结果 Completion" as Completion
+  class "用量 Usage" as Usage
+  class "教学上下文 TeachingContext" as TCtx
+  class "教学技能 TeachingSkill" as Skill
+  class "受限数学工具 MathTool" as Tool
+  Conv "1" -- "0..*" Job
+  Job "1" *-- "0..1" Completion
+  Completion "1" *-- "1" Usage
+  Job "1" *-- "1" TCtx
+}
+
+package "AI 授权与额度" as PQuota {
+  class "教师API配置 TeacherApiConfig" as TApi
+  class "日额度使用 DailyQuota" as Quota
+  class "扣次记录 ChargeRecord" as Charge
+  class "平台AI授权 AiAccessGrant" as Grant
+  class "教师API审计 TeacherApiAudit" as TAudit
+  class "授权审计 AiAccessAudit" as GAudit
+  Quota "1" -- "0..*" Charge
+  TApi "1" -- "0..*" TAudit
+  Grant "1" -- "0..*" GAudit
+}
+
+PSched ..> PUser : <<use>>\n鉴别身份、创建与校验会话
+PSched ..> PQ : <<use>>\n转交题目用况、读取题目与归属教师
+PSched ..> PQuota : <<use>>\n转交配置用况、解析可用凭证与扣减额度
+PSched ..> PAI : <<use>>\n受理任务、登记对话、启动执行、注入技能与工具
+PQ ..> PUser : <<use>>\n题目归属教师、学生投稿
+PAI ..> PQ : <<use>>\n对话绑定题目
+PAI ..> PUser : <<use>>\n对话归属用户
+PQuota ..> PUser : <<use>>\n教师配置、学生额度、平台授权
+
+note bottom of PSched
+  本包集中全部**主动类**（第10讲 p15/p17）：
+  平台服务接口是边界外参与者交互的第一处理者、
+  控制线程起点；任务队列与 Agent 执行器自主推进
+  异步执行。物理映射：server/src/{main,config,
+  http_server,routes,ai_client}.c（单轮询线程）与
+  ai-service/src/{server,jobs,agent}.ts（独立进程，
+  仅监听 127.0.0.1，任务与对话仅存内存、TTL 1 小时）。
+end note
+
+note bottom of PUser
+  物理映射：server/src/{auth,db}.c 与 kv 命名空间 users；
+  角色泛化在代码中实现为 User.role 判别字段 + 路由层角色守卫。
+end note
+
+note bottom of PQ
+  物理映射：server/src/routes.c 题目处理器 + db.c 种子数据，
+  存储于 kv 命名空间 qdata。目标领域对象包内 5 个类
+  ⬜ 无代码支撑（docs/项目开发时间轴.md F02/F03/F04）。
+  逻辑包与物理目录不一致处（routes.c 同时承载路由分发与
+  题目/对话处理器）与 docs/architecture.md “后续按功能拆
+  services_*.c” 的演进约定一致。
+end note
+
+note bottom of PAI
+  物理映射：ai-service/src/{jobs,agent,teaching,math-tools,
+  answer-review,contracts}.ts 与 skills/ 目录。
+end note
+
+note bottom of PQuota
+  物理映射：server/src/{teacher_api,ai_access}.c 与
+  teacher_ai_credentials / usage / charges / audit、
+  ai_access_grants / audit 六张表；平台授权另可由
+  服务器侧带外运维 CLI（scripts/ai_access.py，仅 platform
+  兼容模式）写入——该 CLI 属系统边界外的参与者通道，
+  见图2-2 的“运维人员”参与者，不作为分析模型的包。
+end note
+
+note as N1
+  依赖方向单向收敛于“用户与会话”包，**全图无循环依赖**。
+  AI 模型供应商是系统边界外的外部系统参与者（见图2-2），
+  不是建模元素，故不入包；deploy/、.github/、scripts/ 属部署与
+  协作基础设施，不承载分析建模元素，同样不入包。
+  用况的分包组织见图2-1/图2-2/图2-3 的三个主题（子系统）矩形。
+  设计阶段按 OOD 四部分重新组织包，见图3-9。
+end note
+@enduml

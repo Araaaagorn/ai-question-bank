@@ -1,0 +1,47 @@
+@startuml st1_question
+' AI+题库智能教学平台 — 图2-11 状态图1：题目（Question）生命周期
+' 课程依据（第12讲）：
+'   p6/p8  状态是对象生命期的一个阶段，按属性值划分等价类；状态名描述“所处的状态”而非动作
+'   p8     内部转移：事件发生不导致状态改变，写在状态的内部转移分栏（不画成自转换）
+'   p17    转换串格式：事件名[(用逗号分隔的参数表)] [监护条件] [/动作表达式]
+'   p19/20 状态内转移用 UML 内置关键字 entry / exit / do；不可用这三个关键字命名事件
+'   p22    源状态与目标状态相同的“状态间转移”会先执行 exit 再执行 entry，与内部转移不同
+'   p37    建模后须检查可达性与死状态
+' 说明：当前实现中题目创建即 active；无草稿/待审核状态（学生提交审核为 ⬜ 目标功能）；
+'       archived 仅为保留字段，无任何接口可写入 → 相关转换以灰色虚线标注为 ⬜ 目标设计。
+' 依据：server/src/db.c(db_seed_questions)、routes.c(handle_question_create/update/delete、
+'       handle_chat 的 status 检查)、docs/questions.md、docs/项目开发时间轴.md F02（归档为 P0 需求）
+skinparam shadowing false
+
+state "已发布\n(status = active)" as Published {
+  Published : 修改题目(待更新字段集) [合并后整体校验通过] / 覆盖被提交字段，id 不变
+  Published : 组装题目信息() / 返回对外题目视图
+}
+
+state "已归档\n(status = archived)" as Archived <<目标设计>>
+
+[*] --> Published : 创建题目(题干, 题型, 选项, 答案, 解析, 知识点)\n[会话有效 ∧ 角色 ∈ {teacher, admin} ∧ 字段校验通过]\n/ id := 当前最大 id + 1；status := active；teacherId := 会话用户
+
+Published --> [*] : 删除题目(题目标识) [题目存在] / 销毁题目对象（该标识再查询视为不存在）
+
+Published -[#999999,dashed]-> Archived : 归档题目() ⬜ 目标设计\n[当前无归档接口] / status := archived
+Archived -[#999999,dashed]-> Published : 恢复题目() ⬜ 目标设计\n[当前无恢复接口] / status := active
+
+note right of Published
+  “修改题目”不改变对象所处状态，故按第12讲 p8 建为
+  **内部转移**（写在状态分栏内），不画成自转换。
+  系统启动时装载 5 道演示题走同一“创建题目”事件，
+  其 teacherId = 1(admin)，并以 seedKey 幂等防重。
+  读取链路当前不按 status 过滤；AI 解答提交要求
+  status = active，否则视为题目不存在。
+end note
+
+note bottom of Archived
+  ⬜ 目标设计状态（灰色虚线转换）：archived 字段已存在，
+  但仓库中无任何写入路径（归档为 docs/项目开发时间轴.md
+  F02 的 P0 需求）。草稿、待审核、审核驳回等状态同样未实现
+  （学生提交→教师审核流程 F04 为待办，无代码支撑）。
+  可达性检查（p37）：本图无死状态；已归档仅可经目标设计的
+  “恢复题目”离开，故与两条虚线转换一并标注为未实现。
+end note
+@enduml

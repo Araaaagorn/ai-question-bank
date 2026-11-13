@@ -1,0 +1,91 @@
+@startuml uc2_ai_config
+' AI+题库智能教学平台 — 图2-2 用况图2：AI 解答与 API 配置（已实现，默认 teacher 路由模式）
+' 依据：server/src/routes.c(handle_chat/handle_ai_access)、teacher_api_routes.c、teacher_api.c、
+'       ai_client.c、ai_access.c、ai-service/src/{server,jobs}.ts、docs/pi-chat-api.md、docs/teacher-api.md、
+'       docs/软件需求说明书.md UC-04/UC-05/UC-07
+' 课程依据（第3讲 §4 建模策略）：
+'   ④ 提取条件性行为作为新用况并与原用况形成 «extend»，且在箭头上标明**扩展点与扩展条件**；
+'   ③ 提取公共行为作为新用况并建立 «include»（枝形箭头虚线，基础用况→被包含用况）；
+'   ⑥ 用注解与约束修饰用况。归属解析、额度扣减、密钥加密属用况内部步骤/约束，
+'      不是活动者可感知的独立目标，故不单列为用况，改以注解 + 用况正文表达。
+left to right direction
+skinparam shadowing false
+skinparam packageStyle rectangle
+
+actor "学生\nstudent" as Student
+actor "教师\nteacher" as Teacher
+actor "运维人员\n(可信服务器CLI)" as Ops
+actor "AI模型供应商\n(外部系统,DeepSeek兼容)" as Provider
+
+rectangle "AI+题库智能教学平台 — AI 解答与教师 API 配置子系统" {
+  usecase "UC2-01\n查询AI使用资格与额度" as UCAccess
+  usecase "UC2-02\n提交AI解答任务" as UCSubmit
+  usecase "UC2-03\n同题追问" as UCFollow
+  usecase "UC2-04\n查询AI任务状态" as UCStatus
+  usecase "UC2-05\n取消AI任务" as UCCancel
+  usecase "UC2-06\n执行AI解答任务" as UCExec
+  usecase "UC2-07\n配置教师AI API" as UCPut
+  usecase "UC2-08\n查询教师API配置(脱敏)" as UCGet
+  usecase "UC2-09\n启停教师API配置" as UCPatch
+  usecase "UC2-10\n授予/撤销平台AI授权" as UCGrant
+}
+
+Student --> UCAccess
+Student --> UCSubmit
+Student --> UCFollow
+Student --> UCStatus
+Student --> UCCancel
+Teacher --> UCAccess
+Teacher --> UCSubmit
+Teacher --> UCFollow
+Teacher --> UCStatus
+Teacher --> UCPut
+Teacher --> UCGet
+Teacher --> UCPatch
+
+UCFollow ..> UCSubmit : <<extend>>\n扩展点：提交题目与教学模式之后\n条件：请求携带本用户有效 conversation_id
+UCSubmit ..> UCExec : <<include>>
+
+Provider --> UCExec
+Ops --> UCGrant
+
+note bottom of UCSubmit
+  约束与内部步骤（不单列用况）：
+  1) 由 qdata.teacher_id 解析题目归属教师；
+  2) 读取该教师 API 配置，要求已配置且启用；
+  3) 学生角色在事务内校验并扣减日额度
+     （默认 20 次/学生/教师/上海自然日），
+     明确拒绝（4xx/AI_BUSY）时退还扣次；
+  4) 三种教学模式 solve 完整讲解 / hint 分层提示
+     (1→2→3 级) / review 错因分析，
+     同对话禁止切换模式（409）；
+  5) 受理成功返回 202，执行由 Pi 后台队列异步完成。
+  依据 teacher_api.c resolve/refund、routes.c handle_chat。
+end note
+
+note bottom of UCExec
+  辅助参与者为 AI 模型供应商（外部系统）。
+  任务预算：总 30s（含排队）、≤3 次模型调用、
+  ≤6 次工具调用；状态仅存 Pi 内存（TTL 1 小时）。
+end note
+
+note right of UCPut
+  约束与内部步骤（不单列用况）：
+  API Key 以 AES-256-GCM 加密后入库，
+  AAD 绑定 teacher-api-v1:{id}:{owner}:{version}:{model}，
+  主密钥仅由环境变量注入；每次保存 version+1
+  并写审计；配置与启停共用同一加密存储步骤。
+  仅 teacher 角色可调用，student/admin 返回 403。
+end note
+
+note right of UCGet
+  GET 只回 configured/enabled/model/
+  masked_key/version，绝不回显完整 Key。
+end note
+
+note right of UCGrant
+  运维通过 scripts/ai_access.py 直接写 SQLite
+  （grant/revoke 与审计同事务），无 HTTP 写入口；
+  默认 teacher 模式下不使用该用况。
+end note
+@enduml

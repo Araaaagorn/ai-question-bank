@@ -1,0 +1,190 @@
+@startuml ood11_teacher_api_design_sequence
+' AI+题库智能教学平台 — 图3-12 OOD 设计顺序图：教师配置本人 AI 接口
+'   （人机交互 + 控制驱动 + 数据管理三部分协作）
+' **新增/调整原因（模板 §3.2 设计说明要求）**：OOA 图2-10 按第10讲 p14/p21 不含加密算法、
+'   AAD 绑定串、主密钥注入方式与数据库表等实现条件。经控制驱动部分设计新增
+'   TeacherApiRoutes（CF2 内的被动控制类），经数据管理部分设计新增 TeacherApiService
+'   与两张关系表（teacher_ai_credentials / teacher_ai_audit），并在问题域部分新增
+'   设计期对象 TeacherExecution（第13讲 p34-41：为落实安全约束而补充的设计对象）。
+'   本图说明加密保存、版本递增、审计与脱敏回显的**语句级顺序与事务边界**。
+' **人机交互部分（✅ 已实现，上游 #25）**：web/js/teacher-api.js 的 TeacherApiPage 提供
+'   #teacher-api 页面（index.html 的 page-teacher-api 容器 + 导航栏「AI 配置」按钮，
+'   该按钮仅对 teacher 显示），经 API 封装的 teacherAiApi / saveTeacherAiApi /
+'   setTeacherAiApiEnabled 调用后端。故本图补入 tap 与 api 两条界面类生命线，
+'   与图3-10 的“界面类 → 控制类 → 数据管理类”分层一致（第13讲 p97：界面类只负责
+'   输入输出与窗口更新，业务请求全部转发，不含业务判定）。
+' 课程依据（第11讲 p6/p7/p9/p16-21；第13讲 p97；第14讲 p17-19 控制流间通信、
+'   p28 对象标识、p44-46 数据管理类方案2）
+' 依据：web/js/{teacher-api,api,app}.js、web/index.html、server/src/teacher_api_routes.c、
+'       teacher_api.c（AES-256-GCM 加解密、审计、版本、事务）、docs/teacher-api.md
+autonumber
+skinparam shadowing false
+' 课程格式（第11讲 p6）：对象只在顺序图**顶部**标注一次（[对象名] : 类名）；
+' 下方不再重复绘制对象框与对象名，故关闭 PlantUML 默认的底部 footbox。
+hide footbox
+
+actor "教师" as T
+participant "tap : 教师API配置页 TeacherApiPage" as TAP <<边界类>>
+participant "api : API客户端封装 API" as API <<边界类>>
+participant "tar : 教师API路由 TeacherApiRoutes" as TAR <<控制类>>
+participant "sm : 会话管理 SessionManager" as SM <<数据管理类>>
+participant "ts : 教师API服务 TeacherApiService" as TS <<数据管理类>>
+participant "exec : 运行时凭证 TeacherExecution" as EXEC <<实体类>>
+database "db : SQLite\nteacher_ai_credentials\nteacher_ai_audit" as DB
+
+== 进入配置页并查询脱敏配置（GET /api/v1/teacher/ai-api） ==
+T -> TAP : 点击导航栏「AI 配置」（navigate('#teacher-api')）
+activate TAP
+TAP -> TAP : show()：隐藏其余页面容器，清空密钥与模型输入框
+TAP -> TAP : isTeacher() 本地角色校验（非教师直接显示“仅教师可配置”）
+TAP -> API : teacherAiApi()
+activate API
+API -> TAR : GET /api/v1/teacher/ai-api（Bearer 令牌）
+activate TAR
+TAR -> SM : session_validate(extract_bearer_token(header))
+activate SM
+SM --> TAR : 会话（含角色）或空
+deactivate SM
+TAR -> TS : teacher_api_metadata(cfg, teacher_id)
+activate TS
+TS --> TAR : {configured, enabled, provider:"deepseek", model,\nmasked_key, version, updated_at}
+deactivate TS
+TAR --> API : 200 {"api":{...}}（绝不回显完整密钥或密文）
+deactivate TAR
+API --> TAP : 脱敏配置对象
+deactivate API
+TAP -> TAP : render()：渲染状态、掩码密钥、版本与更新时间；\n未配置时禁用「停用」按钮
+TAP --> T : 显示脱敏配置（加载态 → 内容态；失败则错误态 + 「重试」）
+deactivate TAP
+
+== 保存配置（PUT /api/v1/teacher/ai-api） ==
+T -> TAP : 填写 API Key（可选模型）并点击「保存并启用」
+activate TAP
+TAP -> TAP : save(事件)：本地校验密钥非空（为空则提示，不发请求）；\n按钮置为「保存中...」并禁用
+TAP -> API : saveTeacherAiApi({api_key, model?})
+activate API
+API -> TAR : PUT /api/v1/teacher/ai-api（Bearer 令牌）
+activate TAR
+TAR -> SM : session_validate(extract_bearer_token(header))
+activate SM
+SM --> TAR : 会话（含角色）或空
+deactivate SM
+alt 会话无效
+  TAR --> API : 401 UNAUTHORIZED
+  deactivate TAR
+  API --> TAP : 抛出错误（status = 401）
+  deactivate API
+  TAP --> T : errorMessage()：提示操作失败并可重试
+else 角色为 student 或 admin
+  TAR --> API : 403 TEACHER_REQUIRED（仅教师可配置本人接口）
+  API --> TAP : 抛出错误（status = 403）
+  TAP --> T : errorMessage()：「仅教师可配置自己的 AI API」
+else 角色为 teacher
+  TAR -> TAR : Content-Type 检查（415）；parse() 严格白名单\n（仅接受 api_key / model，拒绝重复字段与 NUL 转义）（400）
+  TAR -> TS : teacher_api_save(cfg, teacher_id, key, model?, 1)
+  activate TS
+  TS -> TS : valid_key：16–512 位可打印 ASCII；\nvalid_model：≤128 且字符集受限
+  opt 密钥或模型名非法
+    TS --> TAR : INVALID_REQUEST
+    TAR --> API : 400 参数非法
+    API --> TAP : 抛出错误（code = INVALID_REQUEST）
+    TAP --> T : errorMessage()：「填写内容不合法，请检查 API Key 与模型名」
+  end
+  group 保存事务 [BEGIN IMMEDIATE ... COMMIT，任一步失败则 ROLLBACK 全量回滚]
+    TS -> DB : identity()：按 id + role 从 users 表解析唯一账号键 owner
+    activate DB
+    DB --> TS : owner_key
+    deactivate DB
+    TS -> DB : load()：读取既有配置槽（owner / model / secret / enabled / version）
+    activate DB
+    DB --> TS : 既有配置或空
+    deactivate DB
+    TS -> TS : version + 1；masked_key = "****" + 末 4 位；\nAES-256-GCM 加密：12B 随机 nonce + 密文 + 16B tag；\nAAD = teacher-api-v1:{teacherId}:{owner}:{version}:{model}；\n主密钥来自 AI_KEY_ENCRYPTION_KEY（仅环境变量注入）
+    TS -> DB : UPSERT teacher_ai_credentials\n(owner_key, model, secret, masked_key, enabled, version, unixepoch())
+    activate DB
+    DB --> TS : 成功
+    deactivate DB
+    TS -> DB : INSERT teacher_ai_audit(action = configure_or_enable)
+    activate DB
+    DB --> TS : 成功
+    deactivate DB
+  end
+  TS -> TS : OPENSSL_cleanse 擦除明文密钥与配置槽
+  TS --> TAR : 空（表示成功）
+  deactivate TS
+  TAR -> TS : teacher_api_metadata(cfg, teacher_id)
+  activate TS
+  TS --> TAR : 脱敏配置
+  deactivate TS
+  TAR --> API : 200 {"api":{...}}
+  deactivate TAR
+  API --> TAP : 脱敏配置对象
+  deactivate API
+  TAP -> TAP : **提交后立即清空密钥与模型输入框**（避免密钥停留在 DOM）；\nrender() 刷新脱敏配置；按钮恢复为「保存并启用」
+  TAP --> T : 提示「已保存并启用」，显示新的掩码密钥与版本号
+end
+deactivate TAP
+
+== 启停配置（PATCH /api/v1/teacher/ai-api {"enabled":bool}） ==
+T -> TAP : 点击「停用」/「启用」
+activate TAP
+TAP -> TAP : toggle()：取 current.enabled 的反值；按钮临时禁用
+TAP -> API : setTeacherAiApiEnabled(启用)
+activate API
+API -> TAR : PATCH（字段白名单仅 enabled，Bearer 令牌）
+activate TAR
+TAR -> SM : session_validate(...)
+activate SM
+SM --> TAR : 会话（角色必须为 teacher）
+deactivate SM
+TAR -> TS : teacher_api_toggle(cfg, teacher_id, enabled)
+activate TS
+alt 配置不存在
+  TS --> TAR : AI_API_NOT_CONFIGURED
+  deactivate TS
+  TAR --> API : 404 尚未配置
+  deactivate TAR
+  API --> TAP : 抛出错误（status = 404）
+  deactivate API
+  TAP --> T : errorMessage()：「尚未配置 AI API，请先填写并保存」
+else 配置存在
+  TS -> DB : BEGIN IMMEDIATE → 读取既有配置槽
+  activate DB
+  DB --> TS : 既有配置（含密文）
+  deactivate DB
+  TS -> TS : crypt() 解密原密钥 → 调 teacher_api_save 重新加密存储\n（version + 1；审计 action = disable 或 configure_or_enable）
+  TS -> DB : UPSERT teacher_ai_credentials + INSERT teacher_ai_audit → COMMIT
+  activate DB
+  DB --> TS : 成功
+  deactivate DB
+  TS -> TS : OPENSSL_cleanse 擦除明文密钥
+  TS --> TAR : 空（表示成功）
+  deactivate TS
+  TAR -> TS : teacher_api_metadata(cfg, teacher_id)
+  activate TS
+  TS --> TAR : 脱敏配置
+  deactivate TS
+  TAR --> API : 200 {"api":{...}}
+  deactivate TAR
+  API --> TAP : 脱敏配置对象
+  deactivate API
+  TAP -> TAP : render() 刷新启用状态与版本号
+  TAP --> T : 提示「已启用」或「已停用」
+end
+deactivate TAP
+
+== 运行时凭证的产出与擦除（由“提交 AI 解答任务”触发，见图3-7） ==
+note over TS, EXEC
+  teacher_api_resolve(cfg, user, role, question, charge) 在 BEGIN IMMEDIATE 事务内
+  依次完成：identity() 校验账号唯一与角色 → 读 qdata.teacher_id 解析归属教师 →
+  load() 配置并检查 enabled → usage() 读当日计数 → 学生且 used ≥ limit 则拒绝 →
+  UPDATE used = used + 1（带 WHERE used < limit 原子守卫）→ INSERT teacher_ai_charges →
+  crypt() 解密密钥 → COMMIT，随后 <<create>> 产出 **TeacherExecution**
+  （teacherId / version / apiKey / model / chargeId）。
+  该对象只在可信进程内短暂驻留：内部转发完成后由 teacher_api_clear()
+  以 OPENSSL_cleanse 擦除；任务被明确拒绝时凭 chargeId 调 teacher_api_refund() 退还扣次。
+  这正是第13讲 p34-41“为落实实现条件与安全约束而新增设计期对象”的实例。
+  版本递增的连带影响：credentialScope（教师标识:版本）变化会使存量对话的追问被拒
+  （见图2-13 与图3-8），页面提示“已提交的任务仍用旧版本完成”与此一致。
+end note
+@enduml

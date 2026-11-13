@@ -1,0 +1,158 @@
+@startuml ood6_design_sequence
+' AI+题库智能教学平台 — 图3-7 OOD 设计顺序图：AI 解答提交的控制驱动与数据管理协作（teacher 模式）
+' 与 OOA 图2-8 的区别与**新增原因**（模板 §3.2 设计说明要求）：
+'   图2-8 是分析层业务视角（参与者 + 平台服务接口 + 领域对象），按第10讲 p14 不含实现条件对象。
+'   本图在**控制驱动部分**与**数据管理部分**设计阶段新增，只保留设计对象，突出：
+'   ① 控制驱动：CF2（后端轮询线程）内全部为短超时**同步操作调用**，长耗时模型执行隔离在
+'      CF3/CF4/CF5（Pi 进程），二者之间是远程过程调用 + 邮箱式异步（第14讲 p17-19）；
+'   ② 数据管理：扣次与退还两个 BEGIN IMMEDIATE 短写事务的语句级顺序（第14讲 p23-46）；
+'   ③ 问题域：设计期新增对象 TeacherExecution 的产出与擦除责任（第13讲 p34-41）。
+' 课程依据（第11讲）：p6 对象表示法“[对象名] : 类名”；p7 执行规约（激活条）顶端对齐进入箭头、
+'   底端对齐返回箭头；p9 同步返回；p10 异步消息用开放箭头，异步返回是另一条异步消息；
+'   p13 loop 表达消息循环；p16-19 opt/alt/group 组合片段；p20-21 发起者居左、控制线程嵌套。
+' 依据：server/src/routes.c handle_chat、teacher_api.c、ai_client.c、
+'       ai-service/src/{server,jobs,agent}.ts、docs/pi-chat-api.md、docs/teacher-api.md
+autonumber
+skinparam shadowing false
+' 课程格式（第11讲 p6）：对象只在顺序图**顶部**标注一次（[对象名] : 类名）；
+' 下方不再重复绘制对象框与对象名，故关闭 PlantUML 默认的底部 footbox。
+hide footbox
+
+participant "rd : 路由分发器 RouteDispatcher" as RD <<控制类>>
+participant "ch : 对话代理控制器 ChatProxyController" as CH <<控制类>>
+participant "sm : 会话管理 SessionManager" as SM <<数据管理类>>
+participant "kv : KV存储层 KvStore" as KV <<数据管理类>>
+database "db : SQLite" as DB
+participant "ts : 教师API服务 TeacherApiService" as TS <<数据管理类>>
+participant "ac : AI客户端 AiClient" as AC <<控制类>>
+participant "ps : 内部接口 InternalJobApi (Pi)" as PS <<process>>
+participant "jq : 任务队列 Jobs (Pi)" as JQ <<thread>>
+participant "ag : Agent执行器 AgentRunner (Pi)" as AG <<thread>>
+participant "exec : 运行时凭证 TeacherExecution" as EXEC <<实体类>>
+actor "模型供应商\n(外部系统)" as MP
+
+== CF2 内：同步操作调用（受理阶段） ==
+RD -> CH : handle_chat(conn, url, method, body, cfg)
+activate CH
+CH -> SM : session_validate(extract_bearer_token(header))
+activate SM
+SM --> CH : Session* 或 NULL
+deactivate SM
+alt 会话无效
+  CH --> RD : 401 UNAUTHORIZED（终止）
+end
+CH -> CH : Content-Type 检查 + chat_fields_valid()\n（字段白名单 / 长度 ≤4000 / mode 枚举 / review 与 student_answer 互斥）
+CH -> KV : kv_to_question(key, db)
+activate KV
+KV -> DB : SELECT key_name, value_name, value FROM qdata WHERE key_name = ?
+activate DB
+DB --> KV : 字段行集
+deactivate DB
+KV --> CH : 题目 cJSON（含 status 与 teacher_id）
+deactivate KV
+alt 题目不存在 或 status ≠ active
+  CH --> RD : 404 QUESTION_NOT_FOUND（终止）
+end
+
+CH -> TS : teacher_api_resolve(cfg, user, role, qid, charge = 1)
+activate TS
+group 短写事务 [BEGIN IMMEDIATE ... COMMIT，任一步失败则 ROLLBACK]
+  TS -> DB : identity()：users 表校验账号唯一与角色
+  activate DB
+  DB --> TS : owner_key
+  deactivate DB
+  TS -> DB : SELECT value FROM qdata WHERE key_name = ? AND value_name = 'teacher_id'
+  activate DB
+  DB --> TS : 归属教师标识
+  deactivate DB
+  TS -> DB : load()：SELECT ... FROM teacher_ai_credentials
+  activate DB
+  DB --> TS : 配置槽（含密文与 version）
+  deactivate DB
+  TS -> DB : SELECT used FROM teacher_ai_usage WHERE (student, teacher, day)
+  activate DB
+  DB --> TS : 当日已用次数
+  deactivate DB
+  TS -> TS : crypt() AES-256-GCM 解密（AAD 绑定 teacher / version / model）
+  TS -> DB : UPDATE teacher_ai_usage SET used = used + 1 WHERE used < limit（原子守卫）
+  activate DB
+  DB --> TS : 影响行数（0 表示额度已尽）
+  deactivate DB
+  TS -> DB : INSERT INTO teacher_ai_charges
+  activate DB
+  DB --> TS : charge_id
+  deactivate DB
+end
+alt 未配置 / 已停用 / 额度用尽 / 存储故障
+  TS --> CH : 错误码 + 额度快照（事务已回滚，未扣次）
+  deactivate TS
+  CH --> RD : 404 / 403 / 429 / 503（终止）
+else 解析成功
+  TS -> EXEC : <<create>> 产出运行时凭证(teacherId, version, apiKey, model, chargeId)
+  activate EXEC
+  EXEC --> TS : 凭证对象
+  deactivate EXEC
+  TS --> CH : TeacherExecution{api_key, model, teacher_id, version, charge_id}
+  deactivate TS
+end
+
+CH -> CH : 组装内部 payload {user_id, question, message, mode, execution}
+CH -> AC : ai_service_request(POST "/internal/v1/jobs", payload)
+activate AC
+AC ->> PS : HTTP POST（Bearer AI_SERVICE_TOKEN + X-User-Id；连接 500ms / 总 2000ms，禁跳转绕代理）
+activate PS
+PS -> PS : authenticated(timingSafeEqual) + parseSubmission() 严格字段校验
+PS -> JQ : jobs.submit(request)
+activate JQ
+JQ -> JQ : 新建/复用 Conversation；ChatJob.status = queued；\n入队并 setImmediate(pump)
+JQ --> PS : job view（status = queued）
+deactivate JQ
+PS -->> AC : 202 JSON
+deactivate PS
+AC --> CH : http_status + 响应体
+deactivate AC
+opt Pi 明确拒绝（400 / 404 / 409 / 413 / 415 / 503 AI_BUSY）
+  CH -> TS : teacher_api_refund(db, charge_id)
+  activate TS
+  group 退还事务 [BEGIN IMMEDIATE ... COMMIT]
+    TS -> DB : UPDATE teacher_ai_usage SET used = used − 1（仅 released = 0 的 charge）
+    activate DB
+    DB --> TS : 成功
+    deactivate DB
+    TS -> DB : UPDATE teacher_ai_charges SET released = 1
+    activate DB
+    DB --> TS : 成功
+    deactivate DB
+  end
+  TS --> CH : 已退还
+  deactivate TS
+end
+CH -> CH : OPENSSL_cleanse(payload) 擦除明文 Key；teacher_api_clear(exec)
+CH --> RD : reply_json(202, 任务受理视图)
+deactivate CH
+
+== CF4 / CF5：异步执行（Pi 事件循环，不占用 CF2 的轮询线程） ==
+activate JQ
+JQ -> JQ : pump() 出队（守护：running < 并发上限 4 且剩余预算 > 0）
+JQ ->> AG : startAgent(config + execution, history, teaching)【异步消息，发送方不等待】
+activate AG
+loop ≤3 次模型调用、≤6 次工具调用，总预算 30s
+  AG ->> MP : 流式 Chat Completions 调用（使用教师 Key）【异步】
+  MP -->> AG : 模型输出 / 工具调用请求
+  AG -> AG : 执行受限工具（四则运算 / 一元一次方程求解 / 代入校验）
+end
+AG -->> JQ : Completion{reply, model, usage, messages}【异步返回】
+deactivate AG
+JQ -> JQ : status = succeeded；提交对话历史；\nfinally 释放 activeJob 与 execution 引用
+deactivate JQ
+
+note over CH, JQ
+  客户端轮询 GET /chat/{job_id} 与取消 DELETE 的控制流与 OOA 图2-8 阶段 4 一致，
+  本图不再重复；对话对象的锁与历史边界见设计状态图 图3-8。
+  设计差异点（相对 OOA）：① 新增 SessionManager / KvStore / TeacherApiService 等
+  数据管理类并给出语句级消息；② 新增设计期对象 TeacherExecution 并显式画出
+  <<create>> 与擦除；③ 扣次与退还以 group 事务框标注边界；④ 跨控制流消息改为
+  异步箭头（开放箭头）以区分同步操作调用；⑤ OOA 的单一主动类“平台服务接口”
+  在设计中拆分为 RouteDispatcher + ChatProxyController + AiClient。
+end note
+@enduml

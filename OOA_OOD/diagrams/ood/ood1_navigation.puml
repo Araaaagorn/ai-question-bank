@@ -1,0 +1,67 @@
+@startuml ood1_navigation
+' AI+题库智能教学平台 — 图3-2 OOD 设计图：系统功能导航结构（人机交互设计·命令组织）
+' 课程依据（第13讲 p86-91）：命令的组织——基本命令（使用一项独立系统功能的命令）、
+'   命令步（执行一条基本命令过程中的具体输入步骤）、高层命令（引导选用另一条命令的命令）；
+'   命令结构可为线性/树型/半序网状/一般网状；建立命令树应遵循“最频繁的命令放前面、
+'   发现整体-部分模式、每层命令数遵循 7+2 原则、层次深度尽量控制在三层以内”。
+' 本图即“高层命令（导航栏/页面入口）→ 基本命令（hash 路由页面）→ 命令步（页面内输入）”的
+'   树型结构，层次深度 2 层，每层命令数 ≤5，符合上述策略。
+' 依据：web/index.html（五个页面容器 + 顶部导航栏）、web/js/app.js（hash 路由 route()、
+'       导航栏「AI 配置」入口仅对 teacher 显示）、web/js/teacher-api.js（TeacherApiPage）
+' 状态：#login / #register / #questions / #chat/{id} / #teacher-api 五个页面均已实现（✅）；
+'       橙色为 ⬜ 建议新增页面（目标设计，当前无代码）。
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam component {
+  BackgroundColor<<建议新增>> #FFF3E0
+  BorderColor<<建议新增>> #E65100
+}
+
+package "浏览器 SPA（web/index.html，hash 路由，无构建链）" {
+  component "顶部导航栏 (navbar)\n用户信息 + 「AI 配置」按钮\n（仅 teacher 可见）+ 退出按钮" as Nav
+  component "登录页\n#login\n(page-login)" as L
+  component "注册页\n#register\n(page-register)" as R
+  component "题目列表页\n#questions\n(page-questions)" as Q
+  component "题目详情 + AI 对话页\n#chat/{id}\n(page-chat)" as C
+  component "教师 AI API 配置页\n#teacher-api\n(page-teacher-api)" as TA
+}
+
+package "⬜ 建议新增页面（目标设计，未实现）" {
+  component "题库管理页（教师）\n题目增删改入口" as X1 <<建议新增>>
+  component "试卷管理页（教师）" as X3 <<建议新增>>
+  component "管理后台（管理员）\n用户/审计/备份" as X4 <<建议新增>>
+  component "个人中心（学生）\n学习记录/额度/历史" as X5 <<建议新增>>
+}
+
+L --> R : "还没有账号？立即注册"
+R --> L : "已有账号？返回登录"
+L --> Q : 登录成功 navigate('#questions')
+R --> Q : 注册成功自动登录
+Q --> C : 点击题目卡片\nnavigate('#chat/'+id)
+C --> Q : "← 返回列表"
+Nav --> TA : 「AI 配置」按钮\nnavigate('#teacher-api')\n（按钮仅对 teacher 显示）
+TA --> Q : "← 返回列表"
+Nav --> L : 退出：清本地状态 +\n清空会话映射 + POST logout
+Q ..> X1 : 建议入口（教师角色可见）
+Q ..> X3 : 建议入口（教师角色可见）
+Nav ..> X4 : 建议入口（管理员可见）
+Nav ..> X5 : 建议入口（学生可见）
+
+note bottom of C
+  页面内分区：题目详情（含"查看答案与解析"折叠）、消息区、
+  AI 权限状态横幅、输入栏（模式选择 solve/hint/review +
+  问题输入 + review 作答输入 + 发送/取消按钮）。
+  权限横幅按后端 reason_code 细分文案，并在 quota.applies 为真时
+  显示"今日剩余 remaining/limit 次（reset_at 重置）"。
+end note
+
+note bottom of TA
+  ✅ 已实现（上游 #25，web/js/teacher-api.js 的 TeacherApiPage）：
+  三态反馈（加载中/错误/内容）、API Key 为 password 输入且
+  autocomplete=off、**提交后立即清空输入框**避免密钥停留在 DOM、
+  仅展示 masked_key、400/403/404/415 分类文案、停用按钮在未配置时禁用。
+  页面自身再做一次 teacher 角色校验（后端对 student/admin 一律 403）。
+  页面提示："密钥只在服务端加密保存，页面仅显示掩码；更换密钥或模型
+  会提升版本号，已提交的任务仍用旧版本完成"——与图2-13 状态图一致。
+end note
+@enduml
