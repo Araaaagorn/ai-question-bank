@@ -64,6 +64,12 @@ def list_questions(token):
     assert set(body) == {"questions"}
     return body["questions"]
 
+def questions_with_status(token, status):
+    status_code, body, _ = request("/api/v1/questions?status=" + status, token)
+    assert status_code == 200
+    assert set(body) == {"questions"}
+    return body["questions"]
+
 mode = sys.argv[1]
 if mode == "list":
     admin_questions = list_questions(login("admin"))
@@ -266,21 +272,35 @@ elif mode == "delete":
 elif mode == "permission":
     student = login("student")
     teacher = login("teacher")
-    # student 写 → 403（权限检查先于 id 存在性）
-    for method, path in (("POST", "/api/v1/questions"),
-                         ("PUT", "/api/v1/questions/1"),
+    # student 仍不能 PUT/DELETE（403，权限检查先于 id 存在性）
+    for method, path in (("PUT", "/api/v1/questions/1"),
                          ("DELETE", "/api/v1/questions/1")):
         status, body, _ = request(path, student, method=method,
                                   data={"content": "x", "type": "short_answer",
                                         "options": [], "answer": "y"})
         assert status == 403, (method, status)
         assert set(body) == {"error"}
-    # teacher 可创建与删除
+    # student 现在可新增，但进入待审核（status=pending）
+    status, body, _ = request("/api/v1/questions", student, method="POST", data={
+        "content": "学生提交待审题", "type": "short_answer", "options": [],
+        "answer": "ok", "analysis": "解析", "knowledge_points": ["权限"],
+    })
+    assert status == 201, status
+    pending_id = body["question"]["id"]
+    assert body["question"]["status"] == "pending"
+    # student 不能审核（403）
+    status, _, _ = request("/api/v1/questions/" + str(pending_id) + "/review",
+                           student, method="POST", data={"action": "approve"})
+    assert status == 403
+    # 清理：教师删除该待审题
+    status, _, _ = request("/api/v1/questions/" + str(pending_id), teacher, method="DELETE")
+    assert status == 200
+    # teacher 可创建（直接 active）与删除
     status, body, _ = request("/api/v1/questions", teacher, method="POST", data={
         "content": "teacher 创建题", "type": "short_answer", "options": [],
         "answer": "ok", "knowledge_points": ["权限"],
     })
-    assert status == 201
+    assert status == 201 and body["question"]["status"] == "active"
     qid = body["question"]["id"]
     status, _, _ = request("/api/v1/questions/" + str(qid), teacher, method="DELETE")
     assert status == 200
@@ -289,6 +309,93 @@ elif mode == "permission":
                            data={"content": "x", "type": "short_answer",
                                  "options": [], "answer": "y"})
     assert status == 401
-    print("PASS: student 写操作 403；teacher 可创建/删除；未登录 401")
+    print("PASS: student 新增进待审、不能改删/审核；teacher 直接生效；未登录 401")
+elif mode == "review":
+    student = login("student")
+    teacher = login("teacher")
+    admin = login("admin")
+    baseline = list_questions(admin)
+
+    def ids(questions):
+        return {q["id"] for q in questions}
+
+    def submit_student(content):
+        status, body, _ = request("/api/v1/questions", student, method="POST", data={
+            "content": content, "type": "short_answer", "options": [],
+            "answer": "答案", "analysis": "解析", "knowledge_points": ["审核"],
+        })
+        assert status == 201, status
+        assert body["question"]["status"] == "pending"
+        return body["question"]["id"]
+
+    pid = submit_student("待审核题-通过")
+    rid = submit_student("待审核题-拒绝")
+
+    # ── 学生提交（未审核，pending）的可见性 ──
+    # 题目列表（默认 active）：学生视角看不到
+    active_ids = ids(list_questions(student))
+    assert pid not in active_ids and rid not in active_ids
+    assert len(active_ids) == len(baseline)
+    # 待审核列表（?status=pending）：学生 403；教师能看到
+    status, _, _ = request("/api/v1/questions?status=pending", student)
+    assert status == 403
+    pending_ids = ids(questions_with_status(teacher, "pending"))
+    assert pid in pending_ids and rid in pending_ids
+
+    # ── 教师提交直接生效（active），不进待审核 ──
+    status, body, _ = request("/api/v1/questions", teacher, method="POST", data={
+        "content": "教师直接生效题", "type": "short_answer", "options": [],
+        "answer": "答案", "knowledge_points": ["审核"],
+    })
+    assert status == 201 and body["question"]["status"] == "active"
+    tid = body["question"]["id"]
+    assert tid in ids(list_questions(teacher))                          # 题目列表可见
+    assert tid not in ids(questions_with_status(teacher, "pending"))     # 待审核列表不可见
+
+    # 非法 action / 缺 action → 400
+    for payload in ({}, {"action": "ok"}):
+        status, _, _ = request("/api/v1/questions/" + str(pid) + "/review",
+                               teacher, method="POST", data=payload)
+        assert status == 400, (payload, status)
+
+    # ── 通过 pid ──
+    status, body, _ = request("/api/v1/questions/" + str(pid) + "/review",
+                              teacher, method="POST", data={"action": "approve"})
+    assert status == 200 and body["question"]["status"] == "active"
+    # 通过后：题目列表可见，待审核列表不可见
+    assert pid in ids(list_questions(teacher))
+    assert pid not in ids(questions_with_status(teacher, "pending"))
+
+    # ── 拒绝 rid ──
+    status, body, _ = request("/api/v1/questions/" + str(rid) + "/review",
+                              teacher, method="POST", data={"action": "reject"})
+    assert status == 200 and body["question"]["status"] == "rejected"
+    # 拒绝后：题目列表不可见、待审核列表不可见、rejected 列表可见
+    assert rid not in ids(list_questions(teacher))
+    assert rid not in ids(questions_with_status(teacher, "pending"))
+    assert rid in ids(questions_with_status(teacher, "rejected"))
+
+    # 已审核题目不能再审（409）
+    status, _, _ = request("/api/v1/questions/" + str(pid) + "/review",
+                           teacher, method="POST", data={"action": "approve"})
+    assert status == 409
+
+    # 不存在/非法 id → 404；active 题目审核 → 409
+    status, _, _ = request("/api/v1/questions/999999/review", teacher,
+                           method="POST", data={"action": "approve"})
+    assert status == 404
+    status, _, _ = request("/api/v1/questions/abc/review", teacher,
+                           method="POST", data={"action": "approve"})
+    assert status == 404
+    status, _, _ = request("/api/v1/questions/1/review", teacher,
+                           method="POST", data={"action": "approve"})
+    assert status == 409
+
+    # 清理（管理员删除 pid/rid/tid）
+    for qid in (pid, rid, tid):
+        status, _, _ = request("/api/v1/questions/" + str(qid), admin, method="DELETE")
+        assert status == 200
+    assert len(list_questions(admin)) == len(baseline)
+    print("PASS: 提交/审核各阶段在题目列表与待审核列表的可见性正确")
 else:
     raise ValueError(mode)
