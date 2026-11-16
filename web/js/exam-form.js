@@ -36,9 +36,20 @@ const ExamFormPage = (() => {
     $('navbar').classList.remove('hidden');
     $('page-exam-form').classList.remove('hidden');
 
-    examId = param === 'new' ? null : parseInt(param, 10);
+    /* 先复位状态：非法 id 提前返回时也不残留上一份试卷 */
     exam = null;
     items = [];
+    if (param === 'new') {
+      examId = null;
+    } else {
+      const id = parseInt(param, 10);
+      /* 空参数或非法 id 不应请求 /exams/NaN，直接回试卷列表 */
+      if (!isFinite(id) || id <= 0) {
+        navigate('#exams');
+        return;
+      }
+      examId = id;
+    }
     $('examFormError').classList.add('hidden');
     $('examFormMsg').classList.add('hidden');
     $('examName').value = '';
@@ -206,7 +217,7 @@ const ExamFormPage = (() => {
   }
 
   async function toggleStatus() {
-    if (!exam || archived() === undefined) return;
+    if (!exam) return;
     const btn = $('examStatusBtn');
     btn.disabled = true;
     const next = archived() ? 'active' : 'archived';

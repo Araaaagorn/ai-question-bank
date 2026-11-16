@@ -85,6 +85,14 @@ const ExamViewPage = (() => {
     return !!user && (user.role === 'teacher' || user.role === 'admin');
   }
 
+  /** 编辑入口按归属判定：admin 全量；teacher 仅本人试卷（docs/exams.md §3 teacher_id）。
+   *  浏览页详情对学生/他人教师都可能 404，按钮必须等服务端数据再决定可见性。 */
+  function canEditExam(exam) {
+    if (!canEdit() || !exam) return false;
+    const user = API.getUser();
+    return user.role === 'admin' || Number(exam.teacher_id) === Number(user.id);
+  }
+
   function show(examId) {
     currentId = parseInt(examId, 10);
     ['page-login', 'page-register', 'page-questions', 'page-chat', 'page-teacher-api',
@@ -95,7 +103,8 @@ const ExamViewPage = (() => {
     $('navbar').classList.remove('hidden');
     $('page-exam').classList.remove('hidden');
     $('examQuestions').innerHTML = '';
-    $('examEditBtn').classList.toggle('hidden', !canEdit());
+    /* 先隐藏编辑按钮，等详情返回后按 teacher_id 判定，避免教师对他人试卷看到可点但 404 的入口 */
+    $('examEditBtn').classList.add('hidden');
     load();
   }
 
@@ -104,6 +113,7 @@ const ExamViewPage = (() => {
     $('examLoading').classList.remove('hidden');
     try {
       const exam = await API.examDetail(currentId);
+      $('examEditBtn').classList.toggle('hidden', !canEditExam(exam));
       render(exam);
     } catch (e) {
       $('examErrorText').textContent = '加载试卷失败：' + (e.message || '未知错误');

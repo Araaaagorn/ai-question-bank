@@ -133,9 +133,11 @@ const API = (() => {
     }
 
     if (!res.ok) {
-      /* 把状态码挂到异常上，供 isNotImplemented 精确判断 */
+      /* 把状态码与业务错误码挂到异常上：status 供 isNotImplemented 精确判断，
+       * code 供页面按后端契约（如 docs/exams.md §8 的 EXAM_*）映射文案并自愈。 */
       const err = new Error(data.error || ('请求失败 (' + res.status + ')'));
       err.status = res.status;
+      err.code = data.code;
       throw err;
     }
     return data;
@@ -552,43 +554,6 @@ const API = (() => {
     });
   }
 
-  function mockExamAddQuestion(id, payload) {
-    return delay(250).then(() => {
-      const exam = writableExam(id);
-      const qid = parseInt((payload || {}).question_id, 10);
-      if (!MOCK_QUESTIONS.some((q) => q.id === qid)) {
-        throw examError(400, 'EXAM_INVALID_QUESTION', '引用了不存在的题目');
-      }
-      if (exam.questions.some((item) => item.question_id === qid)) {
-        throw examError(400, 'EXAM_INVALID_LAYOUT', '该题已在试卷中');
-      }
-      if (exam.questions.length >= 200) {
-        throw examError(400, 'EXAM_INVALID_REQUEST', '单卷题目不能超过 200 道');
-      }
-      exam.questions.push({
-        question_id: qid,
-        position: exam.questions.length + 1,
-        score: validateScore(payload.score)
-      });
-      touchExam(exam);
-      return { exam: examDetailObject(exam) };
-    });
-  }
-
-  function mockExamRemoveQuestion(id, questionId) {
-    return delay(250).then(() => {
-      const exam = writableExam(id);
-      const qid = parseInt(questionId, 10);
-      const index = exam.questions.findIndex((item) => item.question_id === qid);
-      if (index < 0) throw examError(404, 'EXAM_NOT_FOUND', '该题不在试卷中');
-      exam.questions.splice(index, 1);
-      /* 移除后自动重排为 1..n */
-      exam.questions.forEach((item, i) => { item.position = i + 1; });
-      touchExam(exam);
-      return { exam: examDetailObject(exam) };
-    });
-  }
-
   function mockExamDelete(id) {
     return delay(250).then(() => {
       if (currentRole() === 'student') throw examError(403, 'EXAM_FORBIDDEN', '学生无权删除试卷');
@@ -749,22 +714,6 @@ const API = (() => {
       return withOfflineFallback(
         () => request('PUT', '/exams/' + id + '/questions', { questions: questions }).then((body) => body.exam),
         () => mockExamReplaceQuestions(id, questions).then((body) => body.exam)
-      );
-    },
-
-    /** 追加单题 POST /exams/{id}/questions */
-    addExamQuestion(id, payload) {
-      return withOfflineFallback(
-        () => request('POST', '/exams/' + id + '/questions', payload).then((body) => body.exam),
-        () => mockExamAddQuestion(id, payload).then((body) => body.exam)
-      );
-    },
-
-    /** 移除单题 DELETE /exams/{id}/questions/{qid}（后端自动重排 position） */
-    removeExamQuestion(id, questionId) {
-      return withOfflineFallback(
-        () => request('DELETE', '/exams/' + id + '/questions/' + questionId).then((body) => body.exam),
-        () => mockExamRemoveQuestion(id, questionId).then((body) => body.exam)
       );
     },
 
