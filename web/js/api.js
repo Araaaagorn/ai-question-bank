@@ -166,6 +166,20 @@ const API = (() => {
     }
   }
 
+  /** 写接口专用回退：仅「后端不可达 / file:// 离线」时才用演示数据。
+   *  与 withFallback 的区别：不把 404/405/501 视为「未实现」——题目写接口
+   *  已在后端上线，404 是「题目不存在」、403 是「学生越权」，属于真实业务
+   *  错误，必须原样抛给页面，不能被演示数据掩盖。 */
+  async function withOfflineFallback(realCall, mockCall) {
+    if (OFFLINE_PROTOCOL) return mockCall();
+    try {
+      return await realCall();
+    } catch (e) {
+      if (isUnreachable(e)) return mockCall();
+      throw e;
+    }
+  }
+
   /* ══════════════════════════════════════════════════════════
    *  离线演示数据
    *  账号来源：docs/auth.md 第 4 节
@@ -333,6 +347,106 @@ const API = (() => {
         throw new Error('question not found');
       }
       return { question: hit };
+    });
+  }
+
+  /* ── 题目写接口的离线演示 ──
+   * 契约：docs/questions.md（POST/PUT/DELETE 仅 teacher/admin，student 403） */
+
+  function ensureWritableRole() {
+    const user = getUser();
+    if (user && user.role === 'student') {
+      const err = new Error('学生无权新增/修改/删除题目');
+      err.status = 403;
+      throw err;
+    }
+  }
+
+  function validateQuestionPayload(payload) {
+    const { content, type, answer, options, knowledge_points } = payload;
+    if (!content || !content.trim()) throw new Error('content 为必填非空字段');
+    if (type !== 'single_choice' && type !== 'short_answer') {
+      throw new Error('type 仅支持 single_choice 或 short_answer');
+    }
+    if (!answer || !answer.trim()) throw new Error('answer 为必填非空字段');
+    if (type === 'single_choice') {
+      if (!Array.isArray(options) || options.length === 0) {
+        throw new Error('单选题至少需要 1 个选项');
+      }
+      const labels = options.map((o) => o.label).filter(Boolean);
+      if (!labels.includes(answer)) {
+        throw new Error('answer 必须是某个选项的 label');
+      }
+      for (const o of options) {
+        if (!o.label || !o.label.trim() || !o.text || !o.text.trim()) {
+          throw new Error('每个选项需包含非空的 label 与 text');
+        }
+      }
+    } else if (options && options.length !== 0) {
+      throw new Error('简答题 options 必须为空数组');
+    }
+    if (knowledge_points && !Array.isArray(knowledge_points)) {
+      throw new Error('knowledge_points 必须为数组');
+    }
+  }
+
+  function mockCreateQuestion(payload) {
+    return delay(300).then(() => {
+      ensureWritableRole();
+      validateQuestionPayload(payload);
+      const id = Math.max(...MOCK_QUESTIONS.map((q) => q.id), 0) + 1;
+      const question = {
+        id,
+        content: payload.content,
+        type: payload.type,
+        options: payload.type === 'single_choice'
+          ? (payload.options || []).map((o) => ({ label: o.label, text: o.text }))
+          : [],
+        answer: payload.answer,
+        analysis: payload.analysis || '',
+        knowledge_points: Array.isArray(payload.knowledge_points)
+          ? payload.knowledge_points.filter((k) => typeof k === 'string')
+          : []
+      };
+      MOCK_QUESTIONS.push(question);
+      return { question };
+    });
+  }
+
+  function mockUpdateQuestion(id, payload) {
+    return delay(300).then(() => {
+      ensureWritableRole();
+      const num = parseInt(id, 10);
+      const idx = MOCK_QUESTIONS.findIndex((q) => q.id === num);
+      if (idx === -1) throw new Error('question not found');
+      const merged = { ...MOCK_QUESTIONS[idx] };
+      ['content', 'type', 'answer', 'analysis'].forEach((k) => {
+        if (Object.prototype.hasOwnProperty.call(payload, k)) merged[k] = payload[k];
+      });
+      if (payload.options !== undefined) {
+        merged.options = payload.type === 'single_choice'
+          ? (payload.options || []).map((o) => ({ label: o.label, text: o.text }))
+          : [];
+      }
+      if (payload.knowledge_points !== undefined) {
+        merged.knowledge_points = Array.isArray(payload.knowledge_points)
+          ? payload.knowledge_points.filter((k) => typeof k === 'string')
+          : [];
+      }
+      validateQuestionPayload(merged);
+      MOCK_QUESTIONS[idx] = merged;
+      return { question: merged };
+    });
+  }
+
+  function mockDeleteQuestion(id) {
+    return delay(300).then(() => {
+      ensureWritableRole();
+      const num = parseInt(id, 10);
+      const idx = MOCK_QUESTIONS.findIndex((q) => q.id === num);
+      if (idx === -1) throw new Error('question not found');
+      MOCK_QUESTIONS.splice(idx, 1);
+      return { status: 'ok' };
     });
   }
 
@@ -504,6 +618,30 @@ const API = (() => {
         }),
         () => mockChat(questionId, message, { mode, onStatus }),
         () => { chatMocked = true; }
+      );
+    },
+
+    /** 新增题目 POST /questions（仅 teacher/admin，student 403） */
+    createQuestion(payload) {
+      return withOfflineFallback(
+        () => request('POST', '/questions', payload),
+        () => mockCreateQuestion(payload)
+      );
+    },
+
+    /** 修改题目 PUT /questions/{id} */
+    updateQuestion(id, payload) {
+      return withOfflineFallback(
+        () => request('PUT', '/questions/' + id, payload),
+        () => mockUpdateQuestion(id, payload)
+      );
+    },
+
+    /** 删除题目 DELETE /questions/{id} */
+    deleteQuestion(id) {
+      return withOfflineFallback(
+        () => request('DELETE', '/questions/' + id),
+        () => mockDeleteQuestion(id)
       );
     }
   };
