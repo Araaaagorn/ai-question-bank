@@ -29,3 +29,16 @@ jobs:
         run: make -C server build
       - name: 冒烟测试（健康检查 + 静态页）
         run: make -C server test
+
+  # 前端静态页：无构建链，make -C web 分派语法检查与 Node stub 测试
+  # （非分支保护 required check，结果在 PR 页可见；将来稳定后可加入保护）
+  web:
+    name: web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 前端语法检查与 stub 测试
+        run: make -C web lint test
