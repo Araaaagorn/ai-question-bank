@@ -12,6 +12,8 @@
     <div class="navbar-inner">
       <span class="navbar-brand">AI+题库</span>
       <span class="navbar-user" id="userInfo"></span>
+      <button class="btn btn-sm hidden" id="questionSubmitNavBtn" onclick="app.openQuestionSubmit()">投稿</button>
+      <button class="btn btn-sm hidden" id="reviewNavBtn" onclick="app.openReview()">审核</button>
       <button class="btn btn-sm hidden" id="teacherApiNavBtn" onclick="app.openTeacherApi()">AI 配置</button>
       <button class="btn btn-sm" id="logoutBtn" onclick="app.logout()">退出</button>
     </div>
@@ -86,6 +88,65 @@
         <button class="btn btn-sm btn-secondary" onclick="app.reloadQuestions()">重试</button>
       </div>
       <div id="questionsList" class="questions-list"></div>
+    </div>
+  </div>
+
+  <!-- ====== 学生投稿页 ====== -->
+  <div id="page-question-submit" class="page hidden">
+    <div class="container">
+      <h2>投稿新题目</h2>
+      <div id="questionSubmitMsg" class="form-hint is-ok hidden"></div>
+      <div id="questionSubmitError" class="error-box hidden"></div>
+      <form id="questionSubmitForm" onsubmit="return false">
+        <div class="form-group">
+          <label for="qsContent">题干</label>
+          <textarea id="qsContent" rows="4" required></textarea>
+        </div>
+        <div class="form-group">
+          <label>题型</label>
+          <label class="radio-label"><input type="radio" name="qsType" value="single_choice" checked /> 选择题</label>
+          <label class="radio-label"><input type="radio" name="qsType" value="short_answer" /> 简答题</label>
+        </div>
+        <div class="form-group" id="qsOptionsSection">
+          <label>选项</label>
+          <div id="qsOptionsContainer"></div>
+          <button type="button" class="btn btn-sm btn-secondary" onclick="QuestionSubmitPage.addOption('', '')">+ 添加选项</button>
+        </div>
+        <div class="form-group">
+          <label for="qsAnswer">答案</label>
+          <input type="text" id="qsAnswer" placeholder="选择题填选项 label（如 A），简答题填文本" required />
+        </div>
+        <div class="form-group">
+          <label for="qsAnalysis">解析</label>
+          <textarea id="qsAnalysis" rows="3"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="qsKnowledge">知识点（用逗号分隔）</label>
+          <input type="text" id="qsKnowledge" placeholder="例如：一元一次方程, 等式性质" />
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-primary" id="questionSubmitBtn">提 交</button>
+          <button type="button" class="btn btn-secondary" id="questionSubmitCancelBtn">返回题库</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ====== 教师审核队列页（teacher / admin） ====== -->
+  <div id="page-review" class="page hidden">
+    <div class="container">
+      <h2>审核学生提交</h2>
+      <div class="q-manage-bar">
+        <button class="btn btn-sm btn-secondary active" id="reviewTabPending" onclick="ReviewPage.switchStatus('pending')">待审核</button>
+        <button class="btn btn-sm btn-secondary" id="reviewTabRejected" onclick="ReviewPage.switchStatus('rejected')">已驳回</button>
+      </div>
+      <div id="reviewLoading" class="loading">加载中...</div>
+      <div id="reviewError" class="error-box hidden">
+        <span id="reviewErrorText"></span>
+        <button class="btn btn-sm btn-secondary" onclick="ReviewPage.load()">重试</button>
+      </div>
+      <p id="reviewMsg" class="form-hint is-ok hidden"></p>
+      <div id="reviewList" class="questions-list"></div>
     </div>
   </div>
 
@@ -181,6 +242,8 @@
   <script src="/js/utils.js"></script>
   <script src="/js/pi-chat-client.js"></script>
   <script src="/js/questions.js"></script>
+  <script src="/js/question-submit.js"></script>
+  <script src="/js/review.js"></script>
   <script src="/js/teacher-api.js"></script>
   <script src="/js/chat.js"></script>
   <script src="/js/app.js"></script>

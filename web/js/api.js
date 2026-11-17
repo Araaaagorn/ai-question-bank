@@ -166,6 +166,19 @@ const API = (() => {
     }
   }
 
+  /** 写接口与审核队列专用回退：仅「后端不可达 / file:// 离线」才用演示数据。
+   *  不把 404/405 当「未实现」：投稿/审核链路上 403 是越权、404 是题目不存在、
+   *  409 是已被处理，都是真实业务结果，必须原样抛给页面。 */
+  async function withOfflineFallback(realCall, mockCall) {
+    if (OFFLINE_PROTOCOL) return mockCall();
+    try {
+      return await realCall();
+    } catch (e) {
+      if (isUnreachable(e)) return mockCall();
+      throw e;
+    }
+  }
+
   /* ══════════════════════════════════════════════════════════
    *  离线演示数据
    *  账号来源：docs/auth.md 第 4 节
@@ -321,7 +334,29 @@ const API = (() => {
   }
 
   function mockQuestions() {
-    return delay(300).then(() => ({ questions: MOCK_QUESTIONS.slice() }));
+    return delay(300).then(() => ({
+      /* 对齐 #28 契约：默认仅返回 active */
+      questions: MOCK_QUESTIONS.filter((q) => q.status !== 'pending' && q.status !== 'rejected').slice()
+    }));
+  }
+
+  function mockQuestionsByStatus(status) {
+    return delay(300).then(() => {
+      /* pending/rejected 仅 teacher/admin 可查（student 403），非法值 400 */
+      const user = getUser();
+      const role = user ? user.role : null;
+      if (role !== 'teacher' && role !== 'admin') {
+        const err = new Error('仅教师和管理员可查看审核队列');
+        err.status = 403;
+        throw err;
+      }
+      if (status !== 'pending' && status !== 'rejected' && status !== 'active') {
+        const err = new Error('status 仅支持 active/pending/rejected');
+        err.status = 400;
+        throw err;
+      }
+      return { questions: MOCK_QUESTIONS.filter((q) => (q.status || 'active') === status).slice() };
+    });
   }
 
   function mockQuestionDetail(id) {
@@ -332,6 +367,97 @@ const API = (() => {
         /* 对齐 docs/questions.md 的 404 契约 */
         throw new Error('question not found');
       }
+      return { question: hit };
+    });
+  }
+
+  /* ── 学生投稿与教师审核的离线演示 ──
+   * 契约：docs/questions.md（feat/student-question-review）：
+   *   POST /questions：student → pending；teacher/admin → active。
+   *   POST /questions/{id}/review：仅 pending 可审；approve → active（teacher_id 归审核人）；
+   *   reject → rejected 终态；非 pending 返回 409；student 403。 */
+
+  function validateQuestionPayload(payload) {
+    const { content, type, answer, options, knowledge_points } = payload;
+    if (!content || !content.trim()) throw new Error('content 为必填非空字段');
+    if (type !== 'single_choice' && type !== 'short_answer') {
+      throw new Error('type 仅支持 single_choice 或 short_answer');
+    }
+    if (!answer || !answer.trim()) throw new Error('answer 为必填非空字段');
+    if (type === 'single_choice') {
+      if (!Array.isArray(options) || options.length === 0) {
+        throw new Error('单选题至少需要 1 个选项');
+      }
+      const labels = options.map((o) => o.label).filter(Boolean);
+      if (!labels.includes(answer)) {
+        throw new Error('answer 必须是某个选项的 label');
+      }
+      for (const o of options) {
+        if (!o.label || !o.label.trim() || !o.text || !o.text.trim()) {
+          throw new Error('每个选项需包含非空的 label 与 text');
+        }
+      }
+    } else if (options && options.length !== 0) {
+      throw new Error('简答题 options 必须为空数组');
+    }
+    if (knowledge_points && !Array.isArray(knowledge_points)) {
+      throw new Error('knowledge_points 必须为数组');
+    }
+  }
+
+  function mockCreateQuestion(payload) {
+    return delay(300).then(() => {
+      validateQuestionPayload(payload);
+      const user = getUser();
+      const role = user ? user.role : 'student';
+      const id = Math.max(...MOCK_QUESTIONS.map((q) => q.id), 0) + 1;
+      const question = {
+        id,
+        content: payload.content,
+        type: payload.type,
+        options: payload.type === 'single_choice'
+          ? (payload.options || []).map((o) => ({ label: o.label, text: o.text }))
+          : [],
+        answer: payload.answer,
+        analysis: payload.analysis || '',
+        knowledge_points: Array.isArray(payload.knowledge_points)
+          ? payload.knowledge_points.filter((k) => typeof k === 'string')
+          : [],
+        /* #28 契约：学生提交进待审队列，教师/管理员提交直接生效 */
+        status: role === 'student' ? 'pending' : 'active'
+      };
+      MOCK_QUESTIONS.push(question);
+      return { question };
+    });
+  }
+
+  function mockReviewQuestion(id, action) {
+    return delay(300).then(() => {
+      const user = getUser();
+      const role = user ? user.role : null;
+      if (role !== 'teacher' && role !== 'admin') {
+        const err = new Error('学生无权审核题目');
+        err.status = 403;
+        throw err;
+      }
+      if (action !== 'approve' && action !== 'reject') {
+        const err = new Error('action 仅支持 approve 或 reject');
+        err.status = 400;
+        throw err;
+      }
+      const num = parseInt(id, 10);
+      const hit = MOCK_QUESTIONS.filter((q) => q.id === num)[0];
+      if (!hit) {
+        const err = new Error('question not found');
+        err.status = 404;
+        throw err;
+      }
+      if ((hit.status || 'active') !== 'pending') {
+        const err = new Error('该题目不在待审核状态');
+        err.status = 409;
+        throw err;
+      }
+      hit.status = action === 'approve' ? 'active' : 'rejected';
       return { question: hit };
     });
   }
@@ -417,9 +543,18 @@ const API = (() => {
       return withFallback(() => request('GET', '/auth/me'), mockMe);
     },
 
-    /** 获取题目列表 GET /questions */
-    questions() {
-      return withFallback(() => request('GET', '/questions'), mockQuestions);
+    /** 获取题目列表 GET /questions（默认 active）
+     *  opts.status: 'pending'|'rejected'（仅 teacher/admin，student 403） */
+    questions(opts) {
+      const status = opts && opts.status;
+      if (status === undefined) {
+        return withFallback(() => request('GET', '/questions'), mockQuestions);
+      }
+      /* 审核队列：真实 403/400/404 不回退演示数据（see withOfflineFallback） */
+      return withOfflineFallback(
+        () => request('GET', '/questions?status=' + encodeURIComponent(status)),
+        () => mockQuestionsByStatus(status)
+      );
     },
 
     /** 获取题目详情 GET /questions/{id} */
@@ -427,6 +562,22 @@ const API = (() => {
       return withFallback(
         () => request('GET', '/questions/' + id),
         () => mockQuestionDetail(id)
+      );
+    },
+
+    /** 投稿/新增题目 POST /questions（任意登录角色；student → pending 待审） */
+    createQuestion(payload) {
+      return withOfflineFallback(
+        () => request('POST', '/questions', payload),
+        () => mockCreateQuestion(payload)
+      );
+    },
+
+    /** 审核题目 POST /questions/{id}/review（teacher/admin；仅 pending 可审） */
+    reviewQuestion(id, action) {
+      return withOfflineFallback(
+        () => request('POST', '/questions/' + id + '/review', { action: action }),
+        () => mockReviewQuestion(id, action)
       );
     },
 
