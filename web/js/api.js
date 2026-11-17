@@ -133,9 +133,11 @@ const API = (() => {
     }
 
     if (!res.ok) {
-      /* 把状态码挂到异常上，供 isNotImplemented 精确判断 */
+      /* 把状态码与业务错误码挂到异常上：status 供 isNotImplemented 精确判断，
+       * code 供页面按后端契约（如 docs/exams.md §8 的 EXAM_*）映射文案并自愈。 */
       const err = new Error(data.error || ('请求失败 (' + res.status + ')'));
       err.status = res.status;
+      err.code = data.code;
       throw err;
     }
     return data;
@@ -162,6 +164,18 @@ const API = (() => {
         if (onFallback) onFallback();
         return mockCall();
       }
+      throw e;
+    }
+  }
+
+  /** 论文/业务型资源（如试卷）专用回退：只在「后端不可达 / file://」时用演示数据，
+   *  404（资源不存在）、403、409（已归档）必须原样抛给页面，不能被演示数据掩盖。 */
+  async function withOfflineFallback(realCall, mockCall) {
+    if (OFFLINE_PROTOCOL) return mockCall();
+    try {
+      return await realCall();
+    } catch (e) {
+      if (isUnreachable(e)) return mockCall();
       throw e;
     }
   }
@@ -336,6 +350,223 @@ const API = (() => {
     });
   }
 
+  /* ── 试卷演示数据（对齐 docs/exams.md 的试卷对象与错误码） ── */
+  let examSeq = 3;
+  const MOCK_EXAMS = [
+    {
+      id: 1,
+      name: '期中数学测验',
+      description: '覆盖一元一次方程与导数',
+      teacher_id: 2,
+      status: 'active',
+      created_at: 1760000000,
+      updated_at: 1760000000,
+      questions: [{ question_id: 1, position: 1, score: 5 }, { question_id: 2, position: 2, score: 10 }]
+    },
+    {
+      id: 2,
+      name: '物理随堂小测',
+      description: '牛顿第二定律',
+      teacher_id: 2,
+      status: 'archived',
+      created_at: 1760001000,
+      updated_at: 1760001000,
+      questions: [{ question_id: 4, position: 1, score: 8 }]
+    }
+  ];
+
+  function examError(status, code, message) {
+    const err = new Error(message);
+    err.status = status;
+    err.code = code;
+    return err;
+  }
+
+  function currentRole() {
+    const user = getUser();
+    return user ? user.role : null;
+  }
+
+  function findExam(id) {
+    const num = parseInt(id, 10);
+    return MOCK_EXAMS.filter((item) => item.id === num)[0] || null;
+  }
+
+  function visibleExam(id) {
+    const exam = findExam(id);
+    /* archived 对 student 一律 404，不泄露存在性 */
+    if (!exam || (currentRole() === 'student' && exam.status !== 'active')) {
+      throw examError(404, 'EXAM_NOT_FOUND', '试卷不存在');
+    }
+    return exam;
+  }
+
+  function writableExam(id) {
+    if (currentRole() === 'student') throw examError(403, 'EXAM_FORBIDDEN', '学生无权修改试卷');
+    const exam = findExam(id);
+    if (!exam) throw examError(404, 'EXAM_NOT_FOUND', '试卷不存在');
+    if (exam.status === 'archived') throw examError(409, 'EXAM_ARCHIVED', '试卷已归档，不能编辑');
+    return exam;
+  }
+
+  function inlineQuestions(exam) {
+    return exam.questions.map((entry) => {
+      const q = MOCK_QUESTIONS.filter((item) => item.id === entry.question_id)[0] || {};
+      return {
+        question_id: entry.question_id,
+        position: entry.position,
+        score: entry.score,
+        content: q.content || '',
+        type: q.type || 'single_choice',
+        options: Array.isArray(q.options) ? q.options.slice() : [],
+        knowledge_points: Array.isArray(q.knowledge_points) ? q.knowledge_points.slice() : [],
+        answer: q.answer || '',
+        analysis: q.analysis || ''
+      };
+    });
+  }
+
+  function examDetailObject(exam) {
+    return {
+      id: exam.id,
+      name: exam.name,
+      description: exam.description,
+      teacher_id: exam.teacher_id,
+      status: exam.status,
+      created_at: exam.created_at,
+      updated_at: exam.updated_at,
+      questions: inlineQuestions(exam)
+    };
+  }
+
+  function examListItem(exam) {
+    return {
+      id: exam.id,
+      name: exam.name,
+      description: exam.description,
+      teacher_id: exam.teacher_id,
+      status: exam.status,
+      created_at: exam.created_at,
+      updated_at: exam.updated_at,
+      question_count: exam.questions.length
+    };
+  }
+
+  function validateExamMeta(patch, base) {
+    const name = patch.name !== undefined ? patch.name : (base ? base.name : '');
+    if (typeof name !== 'string' || !name.trim() || Array.from(name).length > 100) {
+      throw examError(400, 'EXAM_INVALID_REQUEST', '试卷名称需为 1–100 个字符');
+    }
+    const description = patch.description !== undefined ? patch.description : (base ? base.description : '');
+    if (typeof description !== 'string' || Array.from(description).length > 1000) {
+      throw examError(400, 'EXAM_INVALID_REQUEST', '描述不能超过 1000 个字符');
+    }
+    return { name: name.trim(), description: description };
+  }
+
+  function validateScore(score) {
+    const value = Number(score);
+    if (!isFinite(value) || value <= 0 || value > 1000) {
+      throw examError(400, 'EXAM_INVALID_REQUEST', '分值需大于 0 且不超过 1000');
+    }
+    return value;
+  }
+
+  function touchExam(exam) {
+    exam.updated_at = Math.floor(Date.now() / 1000);
+  }
+
+  function mockExamList() {
+    return delay(300).then(() => {
+      const role = currentRole();
+      const visible = MOCK_EXAMS.filter((exam) => role !== 'student' || exam.status === 'active');
+      return { exams: visible.slice().sort((a, b) => a.id - b.id).map(examListItem) };
+    });
+  }
+
+  function mockExamDetail(id) {
+    return delay(250).then(() => ({ exam: examDetailObject(visibleExam(id)) }));
+  }
+
+  function mockExamCreate(payload) {
+    return delay(250).then(() => {
+      if (currentRole() === 'student') throw examError(403, 'EXAM_FORBIDDEN', '学生无权创建试卷');
+      const meta = validateExamMeta(payload || {}, null);
+      const now = Math.floor(Date.now() / 1000);
+      const exam = {
+        id: examSeq++,
+        name: meta.name,
+        description: meta.description,
+        teacher_id: 2,
+        status: 'active',
+        created_at: now,
+        updated_at: now,
+        questions: []
+      };
+      MOCK_EXAMS.push(exam);
+      return { exam: examDetailObject(exam) };
+    });
+  }
+
+  function mockExamUpdate(id, payload) {
+    return delay(250).then(() => {
+      const exam = writableExam(id);
+      const meta = validateExamMeta(payload || {}, exam);
+      exam.name = meta.name;
+      exam.description = meta.description;
+      touchExam(exam);
+      return { exam: examDetailObject(exam) };
+    });
+  }
+
+  function mockExamStatus(id, status) {
+    return delay(200).then(() => {
+      if (currentRole() === 'student') throw examError(403, 'EXAM_FORBIDDEN', '学生无权修改试卷');
+      if (status !== 'active' && status !== 'archived') {
+        throw examError(400, 'EXAM_INVALID_REQUEST', '状态只能为 active 或 archived');
+      }
+      const exam = findExam(id);
+      if (!exam) throw examError(404, 'EXAM_NOT_FOUND', '试卷不存在');
+      exam.status = status;
+      touchExam(exam);
+      return { exam: examDetailObject(exam) };
+    });
+  }
+
+  function normalizeQuestions(list) {
+    if (!Array.isArray(list)) throw examError(400, 'EXAM_INVALID_REQUEST', '题目列表格式不正确');
+    if (list.length > 200) throw examError(400, 'EXAM_INVALID_REQUEST', '单卷题目不能超过 200 道');
+    const seen = {};
+    return list.map((item, index) => {
+      const qid = parseInt(item.question_id, 10);
+      if (!MOCK_QUESTIONS.some((q) => q.id === qid)) {
+        throw examError(400, 'EXAM_INVALID_QUESTION', '引用了不存在的题目');
+      }
+      if (seen[qid]) throw examError(400, 'EXAM_INVALID_LAYOUT', '同一试卷内题目不能重复');
+      seen[qid] = true;
+      return { question_id: qid, position: index + 1, score: validateScore(item.score) };
+    });
+  }
+
+  function mockExamReplaceQuestions(id, questions) {
+    return delay(250).then(() => {
+      const exam = writableExam(id);
+      exam.questions = normalizeQuestions(questions);
+      touchExam(exam);
+      return { exam: examDetailObject(exam) };
+    });
+  }
+
+  function mockExamDelete(id) {
+    return delay(250).then(() => {
+      if (currentRole() === 'student') throw examError(403, 'EXAM_FORBIDDEN', '学生无权删除试卷');
+      const exam = findExam(id);
+      if (!exam) throw examError(404, 'EXAM_NOT_FOUND', '试卷不存在');
+      MOCK_EXAMS.splice(MOCK_EXAMS.indexOf(exam), 1);
+      return { status: 'ok' };
+    });
+  }
+
   function mockChat(questionId, message, { mode, onStatus } = {}) {
     const modeLabel = { solve: '完整讲解', hint: '分层提示', review: '错因分析' }[mode] || '完整讲解';
     return delay(1200).then(() => {
@@ -489,6 +720,64 @@ const API = (() => {
           });
           return Object.assign({}, mockTeacherApi);
         })
+      );
+    },
+
+    /* ── 试卷（F03）GET/POST/PUT/PATCH/DELETE /exams... 契约见 docs/exams.md ── */
+
+    /** 试卷列表 GET /exams（admin 全部 / teacher 本人 / student 仅 active） */
+    exams() {
+      return withOfflineFallback(
+        () => request('GET', '/exams').then((body) => body.exams || []),
+        () => mockExamList().then((body) => body.exams)
+      );
+    },
+
+    /** 试卷详情 GET /exams/{id}（含内联题目，按 position 升序） */
+    examDetail(id) {
+      return withOfflineFallback(
+        () => request('GET', '/exams/' + id).then((body) => body.exam),
+        () => mockExamDetail(id).then((body) => body.exam)
+      );
+    },
+
+    /** 新建试卷 POST /exams（仅 name / description） */
+    createExam(payload) {
+      return withOfflineFallback(
+        () => request('POST', '/exams', payload).then((body) => body.exam),
+        () => mockExamCreate(payload).then((body) => body.exam)
+      );
+    },
+
+    /** 修改元数据 PUT /exams/{id}（部分更新） */
+    updateExam(id, payload) {
+      return withOfflineFallback(
+        () => request('PUT', '/exams/' + id, payload).then((body) => body.exam),
+        () => mockExamUpdate(id, payload).then((body) => body.exam)
+      );
+    },
+
+    /** 状态切换 PATCH /exams/{id}（active / archived） */
+    setExamStatus(id, status) {
+      return withOfflineFallback(
+        () => request('PATCH', '/exams/' + id, { status: status }).then((body) => body.exam),
+        () => mockExamStatus(id, status).then((body) => body.exam)
+      );
+    },
+
+    /** 整体替换题目编排 PUT /exams/{id}/questions（数组顺序即 position） */
+    replaceExamQuestions(id, questions) {
+      return withOfflineFallback(
+        () => request('PUT', '/exams/' + id + '/questions', { questions: questions }).then((body) => body.exam),
+        () => mockExamReplaceQuestions(id, questions).then((body) => body.exam)
+      );
+    },
+
+    /** 删除试卷 DELETE /exams/{id}（不受 archived 限制） */
+    deleteExam(id) {
+      return withOfflineFallback(
+        () => request('DELETE', '/exams/' + id),
+        () => mockExamDelete(id)
       );
     },
 
