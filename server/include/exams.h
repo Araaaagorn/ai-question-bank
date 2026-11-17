@@ -1,6 +1,8 @@
 #ifndef AIQB_EXAMS_H
 #define AIQB_EXAMS_H
 
+#include <stddef.h>
+
 #include <sqlite3.h>
 
 #include "cJSON.h"
@@ -46,6 +48,17 @@ int exams_create(sqlite3 *db, const char *name, const char *description,
  *        调用者 cJSON_Delete(*out)。
  */
 int exams_get(sqlite3 *db, int id, cJSON **out);
+
+/**
+ * @brief 只读试卷元数据（存在性、status、创建者），不内联题目。
+ *        鉴权与可见性判定必须走这里：悬空引用等存储异常只会让 exams_get 硬失败，
+ *        不影响元数据读取，所有者/管理员因此仍能删除需要修复的试卷（§11）。
+ * @param out_teacher_id 可为 NULL。
+ * @param status/status_sz 可为 NULL/0，此时内部使用临时缓冲。
+ * @return EXAMS_OK / EXAMS_NOT_FOUND / EXAMS_INVALID_REQUEST
+ */
+int exams_meta_get(sqlite3 *db, int id, int *out_teacher_id, char *status,
+                   size_t status_sz);
 
 /**
  * @brief 部分更新元数据。name/description 传 NULL 表示不修改该字段；
