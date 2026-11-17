@@ -66,6 +66,7 @@ ai-question-bank/
 │   │   ├── config.h            # 环境变量配置（含共享 sqlite3 连接）
 │   │   ├── db.h                # SQLite 数据库接口
 │   │   ├── debug.h             # 调试日志宏（编译时 -DDEBUG 开关，零开销）
+│   │   ├── exams.h             # 试卷存储层接口（F03，namespace "edata"）
 │   │   ├── http_server.h       # HTTP 守护进程
 │   │   ├── kv_store.h          # 目录式键值存储接口
 │   │   └── routes.h            # 路由分发
@@ -77,7 +78,8 @@ ai-question-bank/
 │   │   ├── routes.c            # /api/v1/* JSON API + 静态文件服务
 │   │   ├── ai_client.c         # AI API 代理调用（libcurl）
 │   │   ├── auth.c              # 认证鉴权实现
-│   │   └── kv_store.c          # 目录式键值存储实现（namespace → 同名表）
+│   │   ├── kv_store.c          # 目录式键值存储实现（namespace → 同名表）
+│   │   └── exams.c             # 试卷存储层实现（CRUD/编排/列表过滤/题目删除联动）
 │   ├── third_party/            # cJSON（MIT 协议，单文件库：cJSON.c + cJSON.h）
 │   └── tests/                  # 测试（run_tests.sh 自动发现测试组）
 │       ├── run_tests.sh        # 测试入口：自动遍历 auth/health/questions/kv 四组
@@ -263,7 +265,7 @@ AI 层（ai_client.c）  →  大模型代理调用
 /api/v1/auth/*          → 认证相关（login/logout/me）【已实现】
 /api/v1/questions       → 题目列表/详情（GET，只读）【已实现】
 /api/v1/chat            → AI 对话（规划中；前端已预留降级演示数据）
-/api/v1/exams/*         → 试卷相关（规划中）
+/api/v1/exams/*         → 试卷组织与浏览（已实现，F03）
 /api/v1/conversations/* → 对话树相关
 /api/v1/admin/*        → 管理功能（规划中）
 ```
@@ -317,7 +319,8 @@ AI 层（ai_client.c）  →  大模型代理调用
   - `health/`：健康检查（case_1.sh）
   - `questions/`：题目列表/详情、401/404/405/500、旧库迁移（case_1~5.sh + check_api.py + db_test.c）
   - `kv/`：kv_store 单元测试（case_unit.c，18 断言，不依赖 server 进程）
-- 单独运行：`bash server/tests/run_tests.sh kv`（或 questions / auth / health）
+  - `exams/`：试卷存储层单元测试（case_unit.c）+ 试卷接口回归（case_1~5.sh + check_exams.py）
+- 单独运行：`bash server/tests/run_tests.sh kv`（或 questions / auth / health / exams）
 - CI 必须全绿，否则分支保护不允许合并
 
 ### 9.2 测试风格
