@@ -70,6 +70,15 @@ def questions_with_status(token, status):
     assert set(body) == {"questions"}
     return body["questions"]
 
+def register(username, password, role):
+    status, body, _ = request("/api/v1/auth/register", method="POST", data={
+        "username": username, "password": password,
+        "confirm_password": password, "role": role,
+    })
+    assert status == 201, (status, body)
+    assert isinstance(body["token"], str) and body["token"]
+    return body["token"]
+
 mode = sys.argv[1]
 if mode == "list":
     admin_questions = list_questions(login("admin"))
@@ -314,6 +323,7 @@ elif mode == "review":
     student = login("student")
     teacher = login("teacher")
     admin = login("admin")
+    other = register("student2", "student2123", "student")
     baseline = list_questions(admin)
 
     def ids(questions):
@@ -330,17 +340,31 @@ elif mode == "review":
 
     pid = submit_student("待审核题-通过")
     rid = submit_student("待审核题-拒绝")
+    edit_id = submit_student("待审核题-先改后过")
 
     # ── 学生提交（未审核，pending）的可见性 ──
     # 题目列表（默认 active）：学生视角看不到
     active_ids = ids(list_questions(student))
-    assert pid not in active_ids and rid not in active_ids
+    assert pid not in active_ids and rid not in active_ids and edit_id not in active_ids
     assert len(active_ids) == len(baseline)
     # 待审核列表（?status=pending）：学生 403；教师能看到
     status, _, _ = request("/api/v1/questions?status=pending", student)
     assert status == 403
     pending_ids = ids(questions_with_status(teacher, "pending"))
-    assert pid in pending_ids and rid in pending_ids
+    assert pid in pending_ids and rid in pending_ids and edit_id in pending_ids
+    # 非法 status 值：教师 400（已通过权限检查）；学生 403（权限检查优先）
+    status, _, _ = request("/api/v1/questions?status=bogus", teacher)
+    assert status == 400
+    status, _, _ = request("/api/v1/questions?status=bogus", student)
+    assert status == 403
+
+    # ── 详情收口：非 active 仅提交人本人/教师/管理员可读，他人 404 ──
+    status, body, _ = request("/api/v1/questions/" + str(pid), student)
+    assert status == 200 and body["question"]["status"] == "pending"
+    status, _, _ = request("/api/v1/questions/" + str(pid), other)
+    assert status == 404
+    status, _, _ = request("/api/v1/questions/" + str(pid), teacher)
+    assert status == 200
 
     # ── 教师提交直接生效（active），不进待审核 ──
     status, body, _ = request("/api/v1/questions", teacher, method="POST", data={
@@ -351,6 +375,17 @@ elif mode == "review":
     tid = body["question"]["id"]
     assert tid in ids(list_questions(teacher))                          # 题目列表可见
     assert tid not in ids(questions_with_status(teacher, "pending"))     # 待审核列表不可见
+
+    # ── 教师先 PUT 修改待审题、再 approve：修改应保留 ──
+    status, body, _ = request("/api/v1/questions/" + str(edit_id), teacher, method="PUT",
+                              data={"content": "待审核题-已修改", "answer": "新答案"})
+    assert status == 200 and body["question"]["status"] == "pending"
+    assert body["question"]["content"] == "待审核题-已修改"
+    status, body, _ = request("/api/v1/questions/" + str(edit_id) + "/review",
+                              teacher, method="POST", data={"action": "approve"})
+    assert status == 200 and body["question"]["status"] == "active"
+    assert body["question"]["content"] == "待审核题-已修改"
+    assert body["question"]["answer"] == "新答案"
 
     # 非法 action / 缺 action → 400
     for payload in ({}, {"action": "ok"}):
@@ -365,6 +400,9 @@ elif mode == "review":
     # 通过后：题目列表可见，待审核列表不可见
     assert pid in ids(list_questions(teacher))
     assert pid not in ids(questions_with_status(teacher, "pending"))
+    # 通过后为 active：详情对所有人可见
+    status, _, _ = request("/api/v1/questions/" + str(pid), other)
+    assert status == 200
 
     # ── 拒绝 rid ──
     status, body, _ = request("/api/v1/questions/" + str(rid) + "/review",
@@ -374,6 +412,11 @@ elif mode == "review":
     assert rid not in ids(list_questions(teacher))
     assert rid not in ids(questions_with_status(teacher, "pending"))
     assert rid in ids(questions_with_status(teacher, "rejected"))
+    # rejected 终态详情：提交人本人可读，他人 404
+    status, body, _ = request("/api/v1/questions/" + str(rid), student)
+    assert status == 200 and body["question"]["status"] == "rejected"
+    status, _, _ = request("/api/v1/questions/" + str(rid), other)
+    assert status == 404
 
     # 已审核题目不能再审（409）
     status, _, _ = request("/api/v1/questions/" + str(pid) + "/review",
@@ -391,11 +434,11 @@ elif mode == "review":
                            method="POST", data={"action": "approve"})
     assert status == 409
 
-    # 清理（管理员删除 pid/rid/tid）
-    for qid in (pid, rid, tid):
+    # 清理（管理员删除 pid/rid/edit_id/tid）
+    for qid in (pid, rid, edit_id, tid):
         status, _, _ = request("/api/v1/questions/" + str(qid), admin, method="DELETE")
         assert status == 200
     assert len(list_questions(admin)) == len(baseline)
-    print("PASS: 提交/审核各阶段在题目列表与待审核列表的可见性正确")
+    print("PASS: 提交/审核各阶段在列表与详情的可见性、越权收口正确")
 else:
     raise ValueError(mode)

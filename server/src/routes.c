@@ -931,13 +931,14 @@ static enum MHD_Result handle_question_review(struct MHD_Connection *conn,
     snprintf(reviewer, sizeof(reviewer), "%d", s->user_id);
 
     int failed;
+    /* 先写归属/审核人，最后再改 status，压缩“已生效但归属缺失”的中间态窗口。 */
     if (approve) {
-        failed = kv_set(cfg->db, "qdata", key, "status", "active") != 0 ||
-                 kv_set(cfg->db, "qdata", key, "teacher_id", reviewer) != 0 ||
-                 kv_set(cfg->db, "qdata", key, "reviewed_by", reviewer) != 0;
+        failed = kv_set(cfg->db, "qdata", key, "teacher_id", reviewer) != 0 ||
+                 kv_set(cfg->db, "qdata", key, "reviewed_by", reviewer) != 0 ||
+                 kv_set(cfg->db, "qdata", key, "status", "active") != 0;
     } else {
-        failed = kv_set(cfg->db, "qdata", key, "status", "rejected") != 0 ||
-                 kv_set(cfg->db, "qdata", key, "reviewed_by", reviewer) != 0;
+        failed = kv_set(cfg->db, "qdata", key, "reviewed_by", reviewer) != 0 ||
+                 kv_set(cfg->db, "qdata", key, "status", "rejected") != 0;
     }
     if (failed)
         return reply_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
@@ -1045,6 +1046,27 @@ static enum MHD_Result handle_questions(struct MHD_Connection *conn,
 
             cJSON *question = kv_to_question(key, cfg->db);
             if (question == NULL) {
+                return reply_json(conn, MHD_HTTP_NOT_FOUND,
+                                  "{\"error\":\"question not found\"}");
+            }
+
+            /* 详情可见性：active 对所有登录角色可见；pending/rejected
+             * 仅 teacher/admin 或提交人本人可见，否则按 404 处理（不泄露存在性）。 */
+            char *status = kv_get(cfg->db, "qdata", key, "status");
+            int is_active = (status == NULL || strcmp(status, "active") == 0);
+            int is_staff = (strcmp(s->role, "teacher") == 0 ||
+                            strcmp(s->role, "admin") == 0);
+            int is_owner = 0;
+            if (!is_active && !is_staff) {
+                char *submitted = kv_get(cfg->db, "qdata", key, "submitted_by");
+                if (submitted != NULL) {
+                    is_owner = (atoi(submitted) == s->user_id);
+                    free(submitted);
+                }
+            }
+            free(status);
+            if (!is_active && !is_staff && !is_owner) {
+                cJSON_Delete(question);
                 return reply_json(conn, MHD_HTTP_NOT_FOUND,
                                   "{\"error\":\"question not found\"}");
             }
@@ -1434,7 +1456,7 @@ enum MHD_Result route_dispatch(struct MHD_Connection *conn, const char *url,
     /* GET /api/v1/ai/access：统一 AI 授权查询（来自 PR #14） */
     if (strcmp(url, "/api/v1/ai/access") == 0) return handle_ai_access(conn, method, cfg);
 
-    /* 题目接口：GET 只读；POST/PUT/DELETE 写操作（teacher/admin）。 */
+    /* 题目接口：GET 列表/详情只读（非 active 详情按提交人/教师收口）；POST 新增开放给所有登录角色（学生进待审核）；PUT/DELETE/审核仅 teacher/admin。 */
     if (strcmp(url, "/api/v1/questions") == 0 ||
         strncmp(url, "/api/v1/questions/", sizeof("/api/v1/questions/") - 1) == 0) {
         return handle_questions(conn, url, method, body, body_len, cfg);
