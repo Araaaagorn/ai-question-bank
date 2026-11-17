@@ -62,6 +62,18 @@ body {
 .auth-switch a { color: #2563eb; text-decoration: none; }
 .auth-switch a:hover { text-decoration: underline; }
 
+/* ── Teacher AI API ── */
+.teacher-api-status {
+  border-radius: 8px; padding: 10px 14px; margin-bottom: 16px;
+  font-size: 14px; line-height: 1.6; background: #f3f4f6; color: #374151;
+}
+.teacher-api-status.status-none { background: #fff7ed; color: #9a3412; border: 1px solid #f97316; }
+.teacher-api-status.status-active { background: #ecfdf5; color: #065f46; border: 1px solid #10b981; }
+.teacher-api-status.status-disabled { background: #fef2f2; color: #991b1b; border: 1px solid #f87171; }
+.form-hint { font-size: 12px; color: #9ca3af; line-height: 1.7; margin-top: 4px; }
+.form-hint.is-ok { color: #047857; }
+.form-hint.is-error { color: #b91c1c; }
+
 /* ── Forms ── */
 .form-group { margin-bottom: 16px; }
 .form-group label { display: block; font-size: 14px; font-weight: 500; margin-bottom: 6px; color: #374151; }

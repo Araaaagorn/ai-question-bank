@@ -1,0 +1,81 @@
+@startuml uc1_auth_question
+' AI+题库智能教学平台 — 图2-1 用况图1：用户认证与题库管理（已实现）
+' 依据：server/src/routes.c（handle_register/login/logout/me、handle_questions 及 create/update/delete）
+'       server/src/auth.c、server/src/db.c、docs/auth.md、docs/questions.md、docs/软件需求说明书.md UC-01/UC-02
+' 课程依据（第3讲 §4）：主题（系统边界）用矩形标识子系统名；参与者=边界外与系统直接交互的人/设备/外系统；
+'   用况=活动者可感知的完整目标；关联用连线；泛化用空心三角（父类端）；
+'   «include» 用枝形箭头虚线，由基础用况指向被包含用况。
+'   写权限校验与题目字段校验属用况内部步骤与约束（非活动者可感知的独立目标），
+'   按第3讲建模策略第6步以“注解和约束”表达，并在用况正文的主要场景中展开，不单列为用况。
+left to right direction
+skinparam shadowing false
+skinparam packageStyle rectangle
+
+actor "用户\n(抽象)" as User
+actor "管理员\nadmin" as Admin
+actor "教师\nteacher" as Teacher
+actor "学生\nstudent" as Student
+
+Admin -up-|> User
+Teacher -up-|> User
+Student -up-|> User
+
+rectangle "AI+题库智能教学平台 — 用户认证与题库管理子系统" {
+  usecase "UC1-01\n注册账号" as UCReg
+  usecase "UC1-02\n登录" as UCLogin
+  usecase "UC1-03\n登出" as UCLogout
+  usecase "UC1-04\n查询当前用户信息" as UCMe
+  usecase "UC1-05\n浏览题目列表" as UCList
+  usecase "UC1-06\n查看题目详情" as UCDetail
+  usecase "UC1-07\n新增题目" as UCCreate
+  usecase "UC1-08\n修改题目" as UCUpdate
+  usecase "UC1-09\n删除题目" as UCDelete
+  usecase "UC1-10\n创建登录会话" as UCSess
+}
+
+User --> UCReg
+User --> UCLogin
+User --> UCLogout
+User --> UCMe
+User --> UCList
+User --> UCDetail
+
+Teacher --> UCCreate
+Teacher --> UCUpdate
+Teacher --> UCDelete
+Admin --> UCCreate
+Admin --> UCUpdate
+Admin --> UCDelete
+
+UCReg ..> UCSess : <<include>>
+UCLogin ..> UCSess : <<include>>
+
+note bottom of UCSess
+  UC1-01 与 UC1-02 的公共行为（第3讲建模策略③）：
+  注册成功即自动登录（201 返回 token）。
+  会话为服务端内存数组（128 槽，24h 过期），
+  Token 为随机 64 位十六进制（server/src/auth.c）。
+  UC1-03~UC1-09 以“持有有效登录会话”为
+  **前置条件**，不是包含关系，故不画 «include»。
+end note
+
+note right of UCList
+  GET /api/v1/questions
+  任意登录角色可读；
+  当前无分页与检索
+  （检索为目标功能，见图2-3）
+end note
+
+note bottom of UCCreate
+  约束（用况内部步骤，不单列用况）：
+  1) 写权限校验：role ∈ {teacher, admin}，
+     权限检查先于题目存在性校验（403 先于 404）；
+  2) 题目字段校验：content/answer 非空；
+     type ∈ {single_choice, short_answer}；
+     单选题选项非空且 answer ∈ 选项 label；
+     简答题选项必须为空数组；知识点为字符串数组。
+  依据 routes.c handle_questions / extract_question_fields。
+  POST/PUT/DELETE /api/v1/questions[/{id}]；
+  前端无题目管理页面，当前经 HTTP 接口工具调用。
+end note
+@enduml

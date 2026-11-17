@@ -1,0 +1,59 @@
+@startuml st2_ai_job
+' AI+题库智能教学平台 — 图2-12 状态图2：AI 解答任务（ChatJob）生命周期
+' 课程依据（第12讲）：
+'   p6/p8  状态按属性值划分等价类；状态名描述所处状态而非动作
+'   p11-16 事件四种：信号、调用、时间事件（after/at）、变化事件（when）
+'   p17    转换串格式：事件名[(参数表)] [监护条件] [/动作表达式]；
+'          同一事件名可在不同监护条件下出现多次
+'   p19/20 状态内转移用 entry / exit / do；do 活动可被事件中断（非原子）
+'   p23    状态图可以没有终止状态（对象持续运行）；本图任务对象有生命终点（TTL 清除）
+'   p37    建模后检查可达性与死状态
+' 说明：状态仅存 Pi 进程内存，服务重启即清空（设计约束，非缺陷）。
+'       事件名与图2-5 类图 ChatJob / Jobs 的操作一一对应（跨图一致性）。
+' 依据：ai-service/src/jobs.ts（受理任务/调度出队任务/执行任务/取消任务/清理过期对象）、
+'       contracts.ts（任务状态取值）、agent.ts（超时与上限的错误映射）、docs/pi-chat-api.md §3
+skinparam shadowing false
+
+state "排队中\n(status = queued)" as Queued
+state "执行中\n(status = running)" as Running {
+  Running : do / 执行 Agent 循环（调用模型与受限工具，累积消息）
+}
+state "成功\n(status = succeeded)" as Succeeded
+state "失败\n(status = failed)" as Failed
+state "已取消\n(status = cancelled)" as Cancelled
+
+[*] --> Queued : 受理任务(提交请求)\n[对话校验通过 ∧ 并发数 + 等待数未达上限]\n/ 生成任务标识；对话.占用任务锁(任务标识)；返回受理视图
+
+Queued --> Running : 调度出队任务() [运行中任务数 < 并发上限(默认 4)] / 置为执行中()
+Queued --> Cancelled : 取消任务(任务标识, 归属用户) [任务仍在等待队列] / 置为已取消()；对话.释放任务锁()
+Queued --> Failed : 调度出队任务() [剩余预算 = 总预算 −(当前时刻 − 创建时刻) ≤ 0] / 置为失败(超时错误)
+
+Running --> Succeeded : 置为成功(解答结果)\n[未超时 ∧ 未达调用上限 ∧ 最终文本非空]\n/ 保存解答结果与用量；对话.追加对话历史(消息集)；对话.释放任务锁()
+Running --> Failed : 置为失败(错误信息) [发生超时/调用超限/上游错误/限流/输出超限/无效响应之一] / 记录错误码与 HTTP 状态；对话.释放任务锁()
+Running --> Cancelled : 取消任务(任务标识, 归属用户) [任务正在执行] / 取消执行()；置为已取消()；对话.释放任务锁()
+
+Succeeded --> [*] : after(存活时长，默认 1 小时) / 清理过期对象()
+Failed --> [*] : after(存活时长，默认 1 小时) / 清理过期对象()
+Cancelled --> [*] : after(存活时长，默认 1 小时) / 清理过期对象()
+
+note right of Running
+  do 活动为**非原子**、可被“取消任务”事件中断（第12讲 p10/p20）。
+  预算：总 30s（含排队）、≤3 次模型调用、≤6 次工具调用、
+  输出 ≤2048 tokens；模型 SDK 自动重试已关闭。
+end note
+
+note bottom of Failed
+  “置为失败”的监护条件列出六类互斥错误（同一事件名在不同
+  监护条件下可出现多次，第12讲 p17）：超时、调用超限、
+  上游错误、限流、输出超限、无效响应；错误码与 HTTP 状态
+  的完整对照见 docs/pi-chat-api.md §5。失败与取消均
+  **不提交**本轮对话历史。
+end note
+
+note bottom of Cancelled
+  同一对话同时仅允许一个进行中任务（单任务锁），
+  任务到达任一终态时都在收尾处理中释放锁。
+  可达性检查（p37）：五个状态均可达；三个终态均只能经
+  时间事件离开，无死状态。
+end note
+@enduml

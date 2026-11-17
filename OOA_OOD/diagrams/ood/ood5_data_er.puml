@@ -1,0 +1,206 @@
+@startuml ood5_data_er
+' AI+题库智能教学平台 — 图3-6 OOD 设计图：数据管理部分（永久类 ↔ 数据库表映射与逻辑结构）
+' 课程依据（第14讲）：
+'   p23-24 数据管理部分负责在特定 DBMS 中存储与检索持久对象，目的是隔离数据管理方案的影响
+'   p26    面向对象 ↔ 实体-联系 ↔ 关系数据库的概念对应：类↔实体类型↔表；对象↔实体实例↔行；
+'          属性↔属性↔列；关系↔关系↔表
+'   p28    对象标识：永久对象的标识在一个表中唯一；由类导出的表用一个主关键字；
+'          由关联导出的表用相关联两个表的主关键字组合
+'   p29    永久类存放：每个永久类一个表；先确定要存储的属性，再按时空要求规范化（至少满足 1NF），
+'          规范化后的一个属性作为一列、每个对象实例作为一行
+'   p31-37 关联与泛化的存储：1:1 与 1:m 可用外键隐含或单建表；m:n 单建表（主键为两表主键拼接）
+'   p44-46 数据管理类的两种方案；本项目采用**方案2**（设立专门的数据管理类统一负责存储与检索）
+' 本次修订：① 原图把外键引用画成 `..>` 依赖箭头，现改为**关联**（实线 + 多重性），
+'   因为表间外键是结构联系而非“使用关系”（第10讲 p70/p80）；
+'   ② 原图多处以斜杠把若干列挤在同一行（如 created_at / updated_at、student_id / teacher_id / day），
+'   不符合 p29“规范化后的一个属性作为表的一列”，现逐列拆行；
+'   ③ 补上永久类 ↔ 表的映射标注（p26 概念对应）与 EAV 存储的规范化取舍说明；
+'   ④ 补主关键字/候选关键字说明（p28、p39-42）。
+' 依据：server/src/kv_store.c(ensure_table)、db.c(db_init/seed)、ai_access.c(ai_access_init)、
+'       teacher_api.c(teacher_api_init)；建议设计表来源 docs/软件需求说明书.md F-07/F-11、
+'       docs/项目开发时间轴.md F03/F04/F06/F12（标注为 ⬜ 建议设计）
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam class {
+  BackgroundColor<<SQLite表>> #E3F2FD
+  BorderColor<<SQLite表>> #1565C0
+  BackgroundColor<<建议设计>> #FFF3E0
+  BorderColor<<建议设计>> #E65100
+}
+
+class "users\n永久类：用户 User" as TUsers <<SQLite表>> {
+  key_name : TEXT «用户名，对象标识»
+  value_name : TEXT «id / username / name / role / password_hash»
+  value : TEXT
+  created_at : TEXT
+  updated_at : TEXT
+  --
+  PK (key_name, value_name)
+}
+class "qdata\n永久类：题目 Question" as TQ <<SQLite表>> {
+  key_name : TEXT «题目标识字符串，对象标识»
+  value_name : TEXT «content / options / answer / analysis /»
+  value_name : TEXT «type / knowledge_points / seed_key /»
+  value_name : TEXT «teacher_id / status»
+  value : TEXT
+  created_at : TEXT
+  updated_at : TEXT
+  --
+  PK (key_name, value_name)
+}
+class "kv_tables\n（命名空间元信息）" as TKv <<SQLite表>> {
+  namespace : TEXT
+  created_at : TEXT
+  --
+  PK (namespace)
+}
+class "questions\n（遗留骨架表，业务未使用）" as TLegacy <<SQLite表>> {
+  id : INTEGER «PK AUTOINCREMENT»
+  teacher_id : INTEGER
+  content : TEXT
+  answer : TEXT
+  analysis : TEXT
+  tags : TEXT
+  status : TEXT
+  created_at : TEXT
+  --
+  db_init 创建但业务未使用；题目实际存于 qdata
+}
+class "teacher_ai_credentials\n永久类：教师API配置 TeacherApiConfig" as TCred <<SQLite表>> {
+  teacher_id : INTEGER «PK，对象标识»
+  owner_key : TEXT NOT NULL «绑定账号键»
+  model : TEXT NOT NULL
+  secret : BLOB «AES-256-GCM：12B nonce + 密文 + 16B tag»
+  masked_key : TEXT NOT NULL «**** + 末 4 位»
+  enabled : INTEGER «CHECK 0/1»
+  version : INTEGER «CHECK > 0»
+  updated_at : INTEGER
+}
+class "teacher_ai_usage\n永久类：日额度使用 DailyQuota" as TUsage <<SQLite表>> {
+  student_id : INTEGER
+  teacher_id : INTEGER
+  day : INTEGER «Asia/Shanghai 自然日»
+  used : INTEGER «CHECK >= 0»
+  --
+  PK (student_id, teacher_id, day)
+}
+class "teacher_ai_charges\n永久类：扣次记录 ChargeRecord" as TCharge <<SQLite表>> {
+  id : INTEGER «PK AUTOINCREMENT，对象标识»
+  student_id : INTEGER
+  teacher_id : INTEGER
+  day : INTEGER
+  released : INTEGER «DEFAULT 0，CHECK 0/1，退还标记»
+  created_at : INTEGER
+}
+class "teacher_ai_audit\n永久类：教师API审计 TeacherApiAudit" as TAudit <<SQLite表>> {
+  id : INTEGER «PK AUTOINCREMENT»
+  teacher_id : INTEGER
+  version : INTEGER
+  action : TEXT «configure_or_enable | disable»
+  created_at : INTEGER
+}
+class "ai_access_grants\n永久类：平台AI授权 AiAccessGrant（platform 模式）" as TGrant <<SQLite表>> {
+  user_id : INTEGER «PK，CHECK 1..2147483647»
+  user_key : TEXT NOT NULL
+  enabled : INTEGER «CHECK 0/1»
+  expires_at : INTEGER «可空，UTC 秒»
+  updated_at : INTEGER
+}
+class "ai_access_audit\n永久类：授权审计 AiAccessAudit（platform 模式）" as TGAudit <<SQLite表>> {
+  id : INTEGER «PK AUTOINCREMENT»
+  user_id : INTEGER
+  user_key : TEXT
+  action : TEXT «CHECK grant | revoke»
+  expires_at : INTEGER «可空»
+  actor : TEXT
+  reason : TEXT «可空»
+  created_at : INTEGER
+}
+
+TQ "0..*" -- "1" TUsers : teacher_id → users.key_name\n（逻辑外键，无 FOREIGN KEY 声明）
+TCred "0..1" -- "1" TUsers : teacher_id → users.key_name\n（identity() 校验角色与账号唯一性）
+TUsage "0..*" -- "1" TUsers : student_id → users.key_name
+TUsage "0..*" -- "1" TUsers : teacher_id → users.key_name
+TCharge "0..*" -- "1" TUsage : (student_id, teacher_id, day)\n= teacher_ai_usage 的主关键字组合
+TAudit "0..*" -- "1" TCred : teacher_id → teacher_ai_credentials
+TGrant "0..1" -- "1" TUsers : user_id + user_key 绑定
+TGAudit "0..*" -- "1" TGrant : user_id + user_key
+TKv "1" -- "0..*" TUsers : 登记命名空间 users
+TKv "1" -- "0..*" TQ : 登记命名空间 qdata
+
+package "⬜ 建议设计表（服务于目标功能，当前数据库中不存在）" {
+  class "exams\n试卷 Paper" as XExam <<建议设计>> {
+    id : INTEGER «PK»
+    name : TEXT
+    description : TEXT
+    teacher_id : INTEGER
+    status : TEXT
+    created_at : INTEGER
+  }
+  class "exam_questions\n试卷题目 PaperQuestion（关联表）" as XEQ <<建议设计>> {
+    exam_id : INTEGER
+    question_id : INTEGER
+    order_no : INTEGER
+    score : INTEGER
+    --
+    PK (exam_id, question_id)
+  }
+  class "submissions\n学生提交 Submission" as XSub <<建议设计>> {
+    id : INTEGER «PK»
+    student_id : INTEGER
+    content : TEXT
+    status : TEXT «pending | approved | rejected»
+    reviewer_id : INTEGER
+    review_comment : TEXT
+  }
+  class "conversation_nodes\n讨论树节点（目标：分支讨论）" as XNode <<建议设计>> {
+    id : INTEGER «PK»
+    question_id : INTEGER
+    parent_id : INTEGER «可空，自关联»
+    user_id : INTEGER
+    content : TEXT
+    role : TEXT
+    created_at : INTEGER
+  }
+  class "audit_logs\n通用审计（目标：审计日志查询）" as XAudit <<建议设计>> {
+    id : INTEGER «PK»
+    user_id : INTEGER
+    action : TEXT
+    target : TEXT
+    detail : TEXT
+    ip : TEXT
+    created_at : INTEGER
+  }
+}
+XExam "1" *-- "1..*" XEQ : 试卷组织题目\n（m:n 关联单建表，主键为两表主键拼接）
+XEQ "0..*" -- "1" TQ : question_id → qdata.key_name
+XSub "0..*" -- "1" TUsers : student_id → users.key_name
+XNode "0..*" -- "1" TQ : question_id → qdata.key_name
+XNode "0..*" -- "0..1" XNode : parent_id 自关联（Fork 分支）
+
+note bottom of TUsers
+  **不持久化的内存态对象**（设计约束，非缺陷）：
+  登录会话 Session（server/src/auth.c 内存数组 128 槽）、
+  对话 Conversation 与 AI 解答任务 ChatJob（ai-service/src/jobs.ts，TTL 1 小时）
+  ——服务重启即失效，因此没有对应的表，也不出现在本图中。
+end note
+
+note bottom of TQ
+  **规范化取舍（第14讲 p29）**：users 与 qdata 采用 kv_store 的
+  EAV（键值行）通用表——一行只存“某对象某属性”的值，
+  表本身满足 1NF（每个值原子），但**没有**按课程推荐的
+  “一个属性一列、一个对象实例一行”映射永久类。
+  代价：无法用 SQL 直接按属性检索或建索引（题目搜索/筛选
+  ⬜ 需另建映射表或生成列索引，《04》§4.3 建议 8）；
+  收益：新增字段无需迁移 schema。
+  teacher_ai_* 与 ai_access_* 六张表则是规范的“一属性一列”关系表。
+end note
+
+note right of XExam
+  ⬜ 建议设计仅服务于目标功能（试卷、投稿审核、
+  分支讨论树、通用审计），当前数据库**不存在**这些表；
+  落地时需配套数据迁移与索引策略。
+  questions 为 db_init 遗留骨架表（业务未使用），
+  《04》§4.3 建议后续清理或迁移。
+end note
+@enduml

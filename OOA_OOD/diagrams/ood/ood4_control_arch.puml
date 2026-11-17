@@ -1,0 +1,116 @@
+@startuml ood4_control_arch
+' AI+题库智能教学平台 — 图3-5 OOD 设计图：控制驱动部分（控制流与主动对象）
+' 课程依据（第14讲）：
+'   p3   控制流驱动部分用于定义和表示并发系统中的每个控制流；**用主动对象表示每个控制流
+'        （进程、线程）**；所有的主动类构成控制驱动部分；每个控制流开始执行的源头是一个
+'        主动对象的主动操作
+'   p6-8 顺序系统只有一个控制流、消息都是同步的且接收者唯一；并发系统有多个控制流，
+'        消息有同步与异步之分、接收者可能不唯一
+'   p11-12 识别控制流的 8 条理由：①OOA 定义的主动对象 ②系统并发需求 ③系统分布方案
+'        ④任务紧急程度 ⑤实现方便 ⑥异常事件处理 ⑦并行计算 ⑧协调者
+'   p14  审查与筛选：过度并发意味着执行效率损失；每个控制流应高内聚、与相关控制流松耦合，
+'        且必须有上述理由之一
+'   p15  定义各控制流：命名与说明、为每个操作指定所属控制流、描述触发条件与数据来向去向、
+'        定义控制流协调情况
+'   p16  进程/线程表示法：<<process>> / <<thread>>
+'   p17-19 控制流间通信的 4 种机制：操作调用（同步）、邮箱（异步信号）、共享存储器、远程过程调用
+' 本次修订（重要）：原图为“七层分层构件图”，只表达调用层次，**没有识别控制流、没有标注
+'   主动类/进程/线程、也没有说明控制流间的通信机制**，不符合第14讲 p3/p16/p17-19 对
+'   控制驱动部分设计的要求。现按控制流重构；分层调用关系保留在图3-1（设计类图）中。
+'   构件图/部署图属第13/14讲的扩展内容（不在考试范围）且模板未要求交付，故不另立。
+' 依据：docs/architecture.md §1-2、§7；server/src/{main,http_server,routes,ai_client}.c；
+'       ai-service/src/{server,jobs,agent}.ts；scripts/ai_access.py
+skinparam shadowing false
+skinparam componentStyle rectangle
+skinparam package {
+  BackgroundColor #FAFAFA
+}
+skinparam component {
+  BackgroundColor<<thread>> #FCE4EC
+  BorderColor<<thread>> #AD1457
+  BackgroundColor<<process>> #EDE7F6
+  BorderColor<<process>> #4527A0
+}
+
+package "CF1 «process» 浏览器客户端（用户站点）\n识别理由③系统分布方案：与后端不同处理机" as CF1 {
+  component "界面类\nAuthPage / RegisterPage /\nQuestionsPage / ChatPage /\nAPI / PiChatClient" as FE <<process>>
+}
+
+package "CF2 «thread» 后端请求处理\n（libmicrohttpd 单内部轮询线程）\n识别理由①OOA 主动对象“平台服务接口”的落点，\n控制线程起点；⑥异常事件在本流内统一处理" as CF2 {
+  component "HttpServer\nhttp_server.c\n(请求体累积 ≤64KiB，\n完成回调统一释放)" as HTTP <<thread>>
+  component "RouteDispatcher\nroute_dispatch\n(url+method 顺序匹配)" as RD
+  component "StaticFileServer\nserve_static\n(路径穿越防护)" as SS
+  component "业务控制器（被动）\nAuthController / QuestionController /\nChatProxyController / TeacherApiRoutes" as CTRL
+  component "AiClient\nai_client.c\n(libcurl，连接 500ms / 总 2000ms)" as AC
+  component "数据管理类（被动）\nSessionManager / KvStore / DbSeed /\nTeacherApiService / AiAccessService" as DM
+}
+
+package "CF3 «process» Pi AI 执行服务\n（Node.js，仅监听 127.0.0.1:8001）\n识别理由③系统分布方案 + ②并发需求：\n长耗时模型执行不得阻塞 CF2" as CF3 {
+  package "CF4 «thread» 任务泵（事件循环）\n识别理由②并发需求（有界并发 4 + 等待 32）\n+ ④任务紧急程度（总预算 30s 超时）" as CF4 {
+    component "InternalJobApi\nserver.ts\n(服务凭证 timingSafeEqual 校验)" as PS <<thread>>
+    component "Jobs\njobs.ts\n(pump 调度 / clean TTL 1h)" as JQ <<thread>>
+  }
+  package "CF5 «thread» Agent 执行（每任务一个）\n识别理由②并发需求 + ⑥异常与取消处理" as CF5 {
+    component "AgentRunner\nagent.ts\n(预算 30s / ≤3 次模型 / ≤6 次工具)" as AG <<thread>>
+    component "教学技能与受限数学工具\nteaching.ts + skills/ + math-tools.ts" as SK
+  }
+}
+
+package "CF6 «process» 运维授权 CLI（服务器侧带外）\n识别理由⑤实现方便：无 HTTP 写入口，\n仅 platform 兼容模式使用" as CF6 {
+  component "scripts/ai_access.py\ngrant / revoke / status" as CLI <<process>>
+}
+
+database "共享存储器\nSQLite 单文件\ndata/ai_question_bank.db" as DB
+cloud "外部系统\nAI 模型供应商\n(DeepSeek 兼容 API)" as MP
+
+FE --> HTTP : ④ 远程过程调用\nHTTP/JSON /api/v1/*（Bearer 令牌）
+HTTP --> RD : ① 操作调用（同步）
+RD --> CTRL : ① 操作调用（同步，按 url+method 转交）
+RD ..> SS : ① 操作调用（非 /api 路径静态托管）
+CTRL --> DM : ① 操作调用（同步）
+CTRL --> AC : ① 操作调用（同步，短超时）
+AC --> PS : ④ 远程过程调用（内部 HTTP，Bearer 服务凭证 + X-User-Id）\n+ ② 邮箱式异步：202 受理后由客户端轮询 GET 取回结果
+PS --> JQ : ① 操作调用（同步）
+JQ --> AG : ② 邮箱（异步信号）：受理后立即返回，\n由事件循环 pump() 调度执行，发送方不等待
+AG --> SK : ① 操作调用（同步，按教学模式注入技能与工具）
+AG --> MP : ④ 远程过程调用（模型 API，使用教师/平台密钥）
+DM --> DB : ③ 共享存储器
+CLI --> DB : ③ 共享存储器（可信服务器直写；grant/revoke 与审计同事务）
+
+note right of CF2
+  CF2 内只有 HttpServer 是主动类（<<thread>>）；
+  RouteDispatcher、四个业务控制器与全部数据管理类都是
+  **被动对象**，其操作在 CF2 内被同步调用，执行规约嵌套在
+  HttpServer 的执行规约之内（第14讲 p6-7、第11讲 p21）。
+  审查与筛选（p14）：本系统不需要为每个控制器各设一个控制流——
+  过度并发会破坏“共享单一 SQLite 连接 + 单线程串行”的假设，
+  反而损失正确性与效率。
+end note
+
+note right of CF3
+  CF3 与 CF2 之间只有内部 HTTP 一条通道，不存在反向依赖；
+  CF4 与 CF5 之间是异步邮箱语义：Jobs.submit 立即返回受理视图，
+  Agent 执行结果通过任务状态被轮询取回。
+  取消/失败不提交对话历史；Pi 进程重启即清空全部内存状态
+  （设计约束，见《03》§3.1.6.4）。
+end note
+
+note bottom of DB
+  共享存储器的一致性约束：CF2 与 CF6 都可能写同一 SQLite 文件，
+  因此写操作一律使用 BEGIN IMMEDIATE 短写事务
+  （扣次、退还、教师配置保存 + 审计、平台授权 + 审计），
+  并依赖“CF2 单线程串行”的假设；CF3（Pi）**不访问**数据库。
+  对象标识与表映射见图3-6，永久类↔表对应见《03》§3.1.6.4。
+end note
+
+note as N1
+  控制流协调情况（第14讲 p15）：
+  · CF1 → CF2：请求—应答；CF1 对 AI 解答采用“提交后轮询”，
+    轮询间隔 800ms、上限 45s，超时或切题即发 DELETE 取消。
+  · CF2 → CF3：短超时同步提交/查询/取消；模型等待完全隔离在 CF3。
+  · CF4 → CF5：有界并发（默认 4）+ 单对话任务锁，避免同一对话并发执行。
+  · CF6 与 CF2 无直接通信，仅通过共享存储器（SQLite）间接协调，
+    且仅在 platform 兼容模式下生效。
+  每个操作所属的控制流见《03》§3.1.6.3 的“操作—控制流归属表”。
+end note
+@enduml

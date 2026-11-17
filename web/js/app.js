@@ -12,6 +12,8 @@ function route() {
 
   /* 注册页只在 #register 下显示，其余路由统一隐藏 */
   $('page-register').classList.add('hidden');
+  /* 教师 AI 配置页同理，只在 #teacher-api 下显示 */
+  $('page-teacher-api').classList.add('hidden');
   if (hash === '#register') {
     RegisterPage.show();
     return;
@@ -34,12 +36,16 @@ function route() {
   // 更新导航栏用户信息
   const user = API.getUser();
   $('userInfo').textContent = user ? (user.name || user.username) : '';
+  /* 「AI 配置」入口只对教师显示：该接口对 student/admin 一律 403 */
+  $('teacherApiNavBtn').classList.toggle('hidden', !(user && user.role === 'teacher'));
 
   if (hash === '#questions') {
     QuestionsPage.show();
   } else if (hash.startsWith('#chat/')) {
     const id = hash.split('/')[1];
     ChatPage.show(id);
+  } else if (hash === '#teacher-api') {
+    TeacherApiPage.show();
   } else {
     navigate('#questions');
   }
@@ -80,6 +86,22 @@ window.app = {
 
   retryDetail() {
     ChatPage.retryDetail();
+  },
+
+  openTeacherApi() {
+    navigate('#teacher-api');
+  },
+
+  reloadTeacherApi() {
+    TeacherApiPage.load();
+  },
+
+  saveTeacherApi(e) {
+    return TeacherApiPage.save(e);
+  },
+
+  toggleTeacherApi() {
+    return TeacherApiPage.toggle();
   },
 
   navigate
