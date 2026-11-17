@@ -347,6 +347,59 @@ static void test_purge_question(sqlite3 *db) {
     PASS();
 }
 
+/* 悬空引用（题目数据被手工删除 / 联动清理失败）：读取硬失败、
+ * 元数据与鉴权不受影响、所有者仍可删除修复（docs/exams.md §11）。 */
+static void test_dangling_ref(sqlite3 *db) {
+    TEST("悬空引用：读取硬失败，元数据与列表不受影响，可删除修复");
+    seed_question(db, 41, "active");
+    int id = 0;
+    ASSERT(exams_create(db, "坏卷", "", 7, &id) == EXAMS_OK, "创建");
+
+    cJSON *arr = cJSON_CreateArray();
+    cJSON *e = cJSON_CreateObject();
+    cJSON_AddNumberToObject(e, "question_id", 41);
+    cJSON_AddNumberToObject(e, "position", 1);
+    cJSON_AddNumberToObject(e, "score", 5);
+    cJSON_AddItemToArray(arr, e);
+    ASSERT(exams_set_questions(db, id, arr) == EXAMS_OK, "编排单题");
+    cJSON_Delete(arr);
+
+    /* 直接删掉题目数据，模拟清理失败或手工改库后的残留引用。 */
+    char key[16];
+    snprintf(key, sizeof(key), "%d", 41);
+    ASSERT(kv_delete_key(db, "qdata", key) == 0, "移除题目数据");
+
+    cJSON *exam = NULL;
+    ASSERT(exams_get(db, id, &exam) == EXAMS_STORE_FAILED, "整卷读取硬失败");
+    ASSERT(exam == NULL, "不返回半截详情");
+
+    int owner = 0;
+    char status[16];
+    ASSERT(exams_meta_get(db, id, &owner, status, sizeof(status)) == EXAMS_OK,
+           "元数据仍可读");
+    ASSERT(owner == 7 && strcmp(status, "active") == 0, "owner/status 正确");
+    ASSERT(exams_meta_get(db, id, &owner, NULL, 0) == EXAMS_OK, "status 缓冲可省略");
+    ASSERT(exams_meta_get(db, 999, &owner, NULL, 0) == EXAMS_NOT_FOUND,
+           "不存在仍为 NOT_FOUND");
+    ASSERT(exams_meta_get(db, 0, &owner, NULL, 0) == EXAMS_INVALID_REQUEST,
+           "非法 id 为 INVALID_REQUEST");
+
+    int count = 0;
+    char **ids = NULL;
+    ASSERT(exams_list(db, 7, "teacher", &count, &ids) == EXAMS_OK, "列表仍可枚举");
+    int found = 0;
+    for (int i = 0; i < count; i++) {
+        int seen = 0;
+        if (kv_str_to_int(ids[i], &seen) == 0 && seen == id) found = 1;
+    }
+    ASSERT(found, "坏卷仍在列表结果中（由路由层决定隔离）");
+    kv_free_str_array(ids);
+
+    ASSERT(exams_delete(db, id) == EXAMS_OK, "所有者可删除该卷完成修复");
+    ASSERT(exams_meta_get(db, id, &owner, NULL, 0) == EXAMS_NOT_FOUND, "删除后元数据 404");
+    PASS();
+}
+
 static void test_not_found(sqlite3 *db) {
     TEST("不存在的试卷在各操作返回 NOT_FOUND");
     ASSERT(exams_get(db, 999, NULL) == EXAMS_INVALID_REQUEST, "get NULL 输出返回 INVALID_REQUEST");
@@ -381,6 +434,7 @@ int main(void) {
     test_list_filter(db);
     test_delete(db);
     test_purge_question(db);
+    test_dangling_ref(db);
     test_not_found(db);
 
     sqlite3_close(db);
