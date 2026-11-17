@@ -17,6 +17,8 @@ function route() {
     const el = $(id);
     if (el) el.classList.add('hidden');
   });
+  /* 教师 AI 配置页同理，只在 #teacher-api 下显示 */
+  $('page-teacher-api').classList.add('hidden');
   if (hash === '#register') {
     RegisterPage.show();
     return;
@@ -39,6 +41,8 @@ function route() {
   // 更新导航栏用户信息
   const user = API.getUser();
   $('userInfo').textContent = user ? (user.name || user.username) : '';
+  /* 「AI 配置」入口只对教师显示：该接口对 student/admin 一律 403 */
+  $('teacherApiNavBtn').classList.toggle('hidden', !(user && user.role === 'teacher'));
 
   if (hash === '#questions') {
     QuestionsPage.show();
@@ -51,6 +55,8 @@ function route() {
     ExamFormPage.show(hash.split('/').slice(1).join('/'));
   } else if (hash.startsWith('#exam/')) {
     ExamViewPage.show(hash.split('/')[1]);
+  } else if (hash === '#teacher-api') {
+    TeacherApiPage.show();
   } else {
     navigate('#questions');
   }
@@ -154,6 +160,22 @@ window.app = {
 
   saveExamArrange() {
     return ExamFormPage.saveArrange();
+  },
+
+  openTeacherApi() {
+    navigate('#teacher-api');
+  },
+
+  reloadTeacherApi() {
+    TeacherApiPage.load();
+  },
+
+  saveTeacherApi(e) {
+    return TeacherApiPage.save(e);
+  },
+
+  toggleTeacherApi() {
+    return TeacherApiPage.toggle();
   },
 
   navigate

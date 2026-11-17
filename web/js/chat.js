@@ -57,18 +57,38 @@ const ChatPage = (() => {
       revoked: { cls: 'status-denied', text: 'AI 使用权限已撤销，请联系平台负责人' },
       expired: { cls: 'status-denied', text: 'AI 使用权限已到期，请联系平台负责人' },
     };
-    const info = statusMap[aiAccess.status] || { cls: 'status-denied', text: 'AI 权限状态未知' };
+    /* teacher 路由模式下后端用 reason_code 说明不可用原因，比笼统的 not_granted 更有用 */
+    const reasonMap = {
+      AI_API_NOT_CONFIGURED: '该题所属教师尚未配置 AI API，请联系任课教师',
+      AI_API_DISABLED: '该题所属教师的 AI API 已停用，请联系任课教师',
+      AI_QUOTA_EXCEEDED: '今日 AI 提问次数已用完',
+      AI_TEACHER_ONLY: '教师只能使用自己的 AI 配置',
+      QUESTION_NOT_FOUND: '题目不存在或已删除',
+      AI_CREDENTIALS_UNAVAILABLE: 'AI 配置暂时不可用，请稍后重试',
+      AI_API_UNAVAILABLE: 'AI 服务暂时不可用，请稍后重试',
+    };
+    const info = (aiAccess.status !== 'active' && reasonMap[aiAccess.reason_code])
+      ? { cls: 'status-denied', text: reasonMap[aiAccess.reason_code] }
+      : (statusMap[aiAccess.status] || { cls: 'status-denied', text: 'AI 权限状态未知' });
     el.className = 'ai-access-status ' + info.cls;
     let text = info.text;
     if (aiAccess.expires_at) {
       text += '（到期：' + aiAccess.expires_at + '）';
+    }
+    /* 学生配额：applies=false 表示当前角色不计次，不展示 */
+    const quota = aiAccess.quota;
+    if (quota && quota.applies) {
+      text += '；今日剩余 ' + quota.remaining + '/' + quota.limit + ' 次';
+      if (quota.reset_at) {
+        text += '（' + quota.reset_at + ' 重置）';
+      }
     }
     el.textContent = text;
   }
 
   async function refreshAiAccess(silent) {
     try {
-      aiAccess = await API.aiAccess();
+      aiAccess = await API.aiAccess(currentQuestionId);
     } catch (e) {
       if (!silent) {
         addMessage('system', 'AI 权限查询失败：' + (e.message || '未知错误'));
@@ -320,6 +340,15 @@ const ChatPage = (() => {
     let message = e.message || '未知错误';
     if (e.code === 'AI_ACCESS_REQUIRED' || e.code === 'AI_ACCESS_REVOKED' || e.code === 'AI_ACCESS_EXPIRED') {
       message = 'AI 权限不足：' + message + '。请刷新权限或联系平台负责人。';
+      refreshAiAccess(true);
+    } else if (e.code === 'AI_QUOTA_EXCEEDED') {
+      /* 配额用尽：按服务器 quota.reset_at 提示，不退出登录、不自动重发 */
+      const quota = (e.payload && e.payload.quota) || (aiAccess && aiAccess.quota) || null;
+      message = '今日 AI 提问次数已用完';
+      if (quota && quota.reset_at) {
+        message += '，额度将于 ' + quota.reset_at + ' 重置';
+      }
+      message += '。';
       refreshAiAccess(true);
     } else if (e.code === 'CLIENT_CANCELLED') {
       message = '已取消解答。';

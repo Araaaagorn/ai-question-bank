@@ -1,0 +1,366 @@
+@startuml cls3_bce
+' 允许在同一张类图中混用 class 与 database 元素（SQLite 数据库节点）
+!pragma allowmixing true
+' AI+题库智能教学平台 — 图3-1 OOD 设计类图（按问题域 / 人机交互 / 控制驱动 / 数据管理四部分组织）
+' 课程依据：
+'   第13讲 p34  问题域部分＝在 OOA 模型基础上按实现条件做必要修改、调整与细节补充（不是重新转换）
+'   第13讲 p45  增加一般类以建立共同协议；p96 发现窗口与部件的共性，定义较一般的窗口类，形成继承关系
+'   第13讲 p66/p68 OOD 阶段按 [可见性] 名[:类型][=初值] 与 [可见性] 操作名(参数)[:返回类型] 完善属性与操作
+'   第13讲 p69  对象间可访问性：属性可见性→关联/聚合；参数/局部/全局可见性→依赖
+'   第13讲 p97  界面类只负责输入输出与窗口更新，把面向问题域的请求转发给问题域部分；
+'               问题域对象不主动发起与界面对象的通信；两部分低耦合
+'   第14讲 p3   控制驱动部分由全部**主动类**构成，用主动对象表示每个控制流（进程/线程）
+'   第14讲 p16  进程/线程表示法：<<process>> / <<thread>>
+'   第14讲 p11-12 识别控制流的 8 条理由；p17-19 控制流间通信的 4 种机制
+'   第14讲 p23-29 数据管理部分负责持久对象的存储与检索，隔离 DBMS 的影响
+'   第10讲 p80/p85 行为上的调用关系用依赖 <<use>>（虚线枝形箭头）表达
+' 说明：本图为**设计模型**，因此操作名保留真实的 C 函数名 / TS 方法名（第13讲 p68 要求 OOD 完善操作定义）；
+'       这与 OOA 图2-4/图2-5 使用问题域术语的操作名是有意的分层差异，映射见《03》§3.1.2 与《02》§2.2.2。
+' 依据：web/js/*.js、server/src/*.c、ai-service/src/*.ts
+skinparam shadowing false
+skinparam classAttributeIconSize 0
+skinparam class {
+  BackgroundColor<<边界类>> #E8F5E9
+  BorderColor<<边界类>> #2E7D32
+  BackgroundColor<<控制类>> #F3E5F5
+  BorderColor<<控制类>> #6A1B9A
+  BackgroundColor<<数据管理类>> #E0F2F1
+  BorderColor<<数据管理类>> #00695C
+  BackgroundColor<<实体类>> #E3F2FD
+  BorderColor<<实体类>> #1565C0
+  BackgroundColor<<建议设计>> #FFF3E0
+  BorderColor<<建议设计>> #E65100
+  BackgroundColor<<数据源>> #ECEFF1
+  BorderColor<<数据源>> #37474F
+}
+
+package "人机交互部分（边界类，web/ 静态前端）" {
+  abstract class "页面 Page" as BPage <<边界类>> {
+    #容器元素标识 : String
+    --
+    +{abstract} show()
+    +hide()
+  }
+  note bottom of BPage
+    **设计新增的一般类**（第13讲 p45 增加一般类以建立共同协议、
+    p96 定义较一般的窗口类并形成继承关系）。共同协议依据：
+    AuthPage / RegisterPage / QuestionsPage / ChatPage / TeacherApiPage
+    五个前端模块**均已实现同名 show() 生命周期入口**，由 app.js route() 统一调用。
+    ⚠ 前端为无构建链的 IIFE 模块，代码中未提取公共基类，
+    本类为设计阶段抽象（⬜ 设计抽象，非既有代码结构）。
+  end note
+
+  class "登录页 AuthPage" as BLogin <<边界类>> {
+    --
+    +show()
+    +handleLogin(事件)
+  }
+  class "注册页 RegisterPage" as BReg <<边界类>> {
+    --
+    +show()
+    +handleRegister(事件)
+  }
+  class "题目列表页 QuestionsPage" as BQ <<边界类>> {
+    --
+    +show()
+    +reload()
+    -renderQuestions(题目集)
+  }
+  class "对话页 ChatPage" as BC <<边界类>> {
+    -conversations : Map«题目:模式 → conversation_id»
+    -activeController : AbortController «0..1»
+    -currentQuestionId : int «当前题目，用于按题查询资格»
+    -aiAccess : 资格与配额快照 «allowed/status/reason_code/quota»
+    --
+    +show(题目标识)
+    +sendMessage()
+    +cancel()
+    +onModeChange()
+    +resetConversations()
+    -refreshAiAccess(是否静默)
+    -renderAiAccessBanner()
+    -handleChatError(错误)
+  }
+  class "API客户端封装 API" as BApi <<边界类>> {
+    --
+    +login(用户名, 密码)
+    +register(用户名, 密码, 确认, 角色)
+    +logout()
+    +me()
+    +questions()
+    +questionDetail(题目标识)
+    +aiAccess(题目标识)
+    +chat(选项)
+    +teacherAiApi()
+    +saveTeacherAiApi(载荷)
+    +setTeacherAiApiEnabled(启用)
+    +setAuth(令牌, 用户)
+    +clearAuth()
+    -withFallback(真实调用, 演示数据)
+  }
+  class "Pi任务客户端 PiChatClient" as BPi <<边界类>> {
+    --
+    +sendPiChat(选项)
+    +getPiAiAccess(令牌, 题目标识, 选项)
+  }
+  class "教师API配置页 TeacherApiPage" as BX <<边界类>> {
+    -current : 配置脱敏视图 «0..1»
+    --
+    +show()
+    +load()
+    +save(事件)
+    +toggle()
+    -render()
+    -errorMessage(错误)
+  }
+}
+
+package "控制驱动部分（控制类；<<process>>/<<thread>> 为主动类）" {
+  class "HTTP服务 HttpServer" as CHttp <<控制类>> <<thread>> {
+    -请求体上限 : int «64 KiB»
+    --
+    +http_server_start(cfg) : int
+    -request_handler(...)
+  }
+  class "路由分发器 RouteDispatcher" as CRd <<控制类>> {
+    --
+    +route_dispatch(conn, url, method, body, len, cfg)
+  }
+  class "静态文件服务 StaticFileServer" as CStatic <<控制类>> {
+    --
+    +serve_static(conn, url, cfg)
+  }
+  class "认证控制器 AuthController" as CAuth <<控制类>> {
+    --
+    +handle_register(...)
+    +handle_login(...)
+    +handle_logout(...)
+    +handle_me(...)
+    -validate_password(密码)
+    -hash_password(密码)
+  }
+  class "题目控制器 QuestionController" as CQ <<控制类>> {
+    --
+    +handle_questions(conn, url, method, body, cfg)
+    -handle_question_create(...)
+    -handle_question_update(...)
+    -handle_question_delete(...)
+    -extract_question_fields(...) : int
+    -kv_to_question(key, db) : cJSON*
+    -next_question_id(db) : int
+  }
+  class "对话代理控制器 ChatProxyController" as CChat <<控制类>> {
+    --
+    +handle_chat(conn, url, method, body, cfg)
+    -chat_fields_valid(root) : int
+    -chat_uuid_valid(v) : int
+  }
+  class "教师API路由 TeacherApiRoutes" as CTar <<控制类>> {
+    --
+    +teacher_api_route(conn, url, method, body, len, cfg)
+  }
+  class "AI客户端 AiClient" as CAi <<控制类>> {
+    --
+    +ai_service_request(cfg, method, path, user_id, body, out) : int
+  }
+  class "内部接口 InternalJobApi" as PApi <<控制类>> <<process>> {
+    --
+    +createApp(config)
+    -authenticated(req, token)
+    -parseSubmission(body)
+  }
+  class "任务队列 Jobs" as PJobs <<控制类>> <<thread>> {
+    --
+    +submit(request)
+    +get(id, owner)
+    +cancel(id, owner)
+    -pump()
+    -execute(job)
+    -clean()
+  }
+  class "Agent执行器 AgentRunner" as PAgt <<控制类>> <<thread>> {
+    +completion : Promise«Completion»
+    --
+    +startAgent(config, request, history, teaching)
+    +cancel()
+  }
+}
+note bottom of PApi
+  控制流清单（第14讲 p11-12 识别理由、p17-19 通信机制）：
+  CF1 «process» 浏览器 SPA — 理由③分布方案；↔CF2 远程过程调用
+  CF2 «thread» HttpServer — 理由①OOA 主动对象落点/控制线程起点
+  CF3 «process» InternalJobApi（Pi 进程）— 理由③+②；↔CF2 远程过程调用
+      + 邮箱式异步（202 受理后由客户端轮询取结果）
+  CF4 «thread» Jobs（任务泵，并发 4/等待 32）— 理由②+④超时预算
+  CF5 «thread» AgentRunner（每任务独立执行流）— 理由②+⑥异常与取消
+  CF6 «process» 运维授权 CLI（带外）— 理由⑤；↔CF2 共享存储器（同一 SQLite 文件）
+  数据管理类与 AI 模型供应商**不是**主动类（前者在 CF2 内被同步调用，
+  后者是边界外外部系统）。详见《03》§3.1.6.3。
+end note
+
+package "问题域部分（设计细化与跨图引用，定义详见图2-4/图2-5）" {
+  class "用户 User" as DUser <<实体类>>
+  class "登录会话 Session" as DSess <<实体类>>
+  class "题目 Question" as DQ <<实体类>>
+  class "对话 Conversation" as DConv <<实体类>>
+  class "AI解答任务 ChatJob" as DJob <<实体类>>
+  class "教师API配置 TeacherApiConfig" as DTApi <<实体类>>
+  class "运行时凭证 TeacherExecution" as DExec <<实体类>> {
+    +teacherId : int
+    +version : int
+    +apiKey : char[513] «解密后短暂驻留»
+    +model : char[129]
+    +chargeId : sqlite3_int64 «退还凭据»
+    --
+    +teacher_api_clear(exec)
+  }
+  note bottom of DUser
+    问题域部分的设计（第13讲 p34-41）：
+    ① C11 不支持继承 → OOA 角色泛化压平为 User.role 判别字段
+       + 路由层角色守卫（p53 取消继承·展平）；
+    ② 不新增领域实体字段，实体属性与 OOA 一致（此处为跨图引用桩）；
+    ③ 新增设计期对象 TeacherExecution，使“明文 Key 短暂驻留、
+       用后立即擦除”的安全责任在类图中可见；
+    ④ kv qdata 的“一键多值”聚合视图不拆为新类；
+    ⑤ ⬜ 目标设计类保留在 OOA 图2-4，不进入设计类图。
+    详见《03》§3.1.6.1。
+  end note
+}
+
+package "数据管理部分（数据管理类，server/）" {
+  class "会话管理 SessionManager" as ESession <<数据管理类>> {
+    -会话槽数 : int «128»
+    --
+    +session_create(userId, role, name)
+    +session_validate(token)
+    +session_destroy(token)
+    +extract_bearer_token(header)
+    -session_cleanup()
+  }
+  class "教师API服务 TeacherApiService" as ETApi <<数据管理类>> {
+    --
+    +teacher_api_init(db)
+    +teacher_api_metadata(cfg, teacher)
+    +teacher_api_save(cfg, teacher, key, model, enabled)
+    +teacher_api_toggle(cfg, teacher, enabled)
+    +teacher_api_resolve(cfg, user, role, question, charge)
+    +teacher_api_refund(db, charge_id)
+    -identity(db, user, role)
+    -crypt(方向, 槽位)
+  }
+  class "平台授权服务 AiAccessService" as EAcc <<数据管理类>> {
+    --
+    +ai_access_init(db)
+    +ai_access_get(db, user_id, now)
+  }
+  class "KV存储层 KvStore" as EKv <<数据管理类>> {
+    --
+    +kv_init(db)
+    +kv_set(db, ns, key, name, value)
+    +kv_get(db, ns, key, name)
+    +kv_get_all(db, ns, key)
+    +kv_delete(db, ns, key, name)
+    +kv_delete_key(db, ns, key)
+    +kv_list_keys(db, ns)
+    -safe_table_name(ns)
+    -ensure_table(db, ns)
+  }
+  class "种子与用户数据访问 DbSeed" as ESeed <<数据管理类>> {
+    --
+    +db_init(path)
+    +db_seed_users(db)
+    +db_seed_questions(db)
+    +db_create_user(db, username, hash, role)
+    +db_query_user_by_username(db, username)
+    +db_query_password_hash(db, username)
+  }
+  class "SQLite 数据库\ndata/ai_question_bank.db" as DB <<数据源>>
+}
+note bottom of EKv
+  数据管理部分的设计（第14讲 p23-46）：
+  ① 选用 R-DBMS（SQLite 单文件）；② 对象标识：users/qdata 用
+     (key_name, value_name) 复合主键，teacher_ai_credentials 用 teacher_id，
+     ai_access_grants 用 user_id；③ 永久类↔表映射见图3-6；
+  ④ 采用**方案2**（p45）：由专门的数据管理类统一负责存储与检索，
+     问题域类不承担 SQL 细节；⑤ KvStore 为 EAV 键值行通用表，
+     未按“一属性一列”规范化映射永久类（取舍与代价见《03》§3.1.6.4）；
+  ⑥ Session/Conversation/ChatJob 为内存对象，不持久化（设计约束）。
+end note
+
+' ── 泛化（G）──
+BPage <|-- BLogin : G1
+BPage <|-- BReg : G2
+BPage <|-- BQ : G3
+BPage <|-- BC : G4
+BPage <|-- BX : G5
+
+' ── 关联与聚合（C）──
+ESession "1" o-- "0..*" DSess : C1 内存会话数组 >
+PJobs "1" o-- "0..*" DConv : C2 内存登记对话 >
+PJobs "1" o-- "0..*" DJob : C3 内存登记任务 >
+
+' ── 依赖（D，<<use>>：参数/局部/全局可见性，第13讲 p69）──
+BLogin ..> BApi : D1 <<use>>
+BReg ..> BApi : D2 <<use>>
+BQ ..> BApi : D3 <<use>>
+BC ..> BApi : D4 <<use>>
+BC ..> BPi : D5 <<use>>
+BApi ..> BPi : D6 chat() 委托 <<use>>
+BX ..> BApi : D7 复用统一客户端 <<use>>
+
+BApi ..> CRd : D8 HTTP/JSON /api/v1/*\nBearer token <<use>>
+BPi ..> CRd : D9 HTTP/JSON <<use>>
+BX ..> CTar : D10 GET/PUT/PATCH\n/teacher/ai-api <<use>>
+
+CHttp ..> CRd : D11 请求分发 <<use>>
+CRd ..> CAuth : D12 <<use>>
+CRd ..> CQ : D13 <<use>>
+CRd ..> CChat : D14 <<use>>
+CRd ..> CTar : D15 teacher 模式优先转交 <<use>>
+CRd ..> CStatic : D16 非 /api 路径静态托管 <<use>>
+CQ ..> EKv : D17 qdata 读写 <<use>>
+CAuth ..> ESeed : D18 users 读写 <<use>>
+CAuth ..> ESession : D19 会话创建与校验 <<use>>
+CChat ..> ESession : D20 会话校验 <<use>>
+CChat ..> ETApi : D21 归属/额度/解密/退还 <<use>>
+CChat ..> CAi : D22 内部 HTTP 转发 <<use>>
+CTar ..> ETApi : D23 <<use>>
+CAi ..> PApi : D24 内部 HTTP\nBearer AI_SERVICE_TOKEN + X-User-Id <<use>>
+PApi ..> PJobs : D25 <<use>>
+PJobs ..> PAgt : D26 异步启动执行 <<use>>
+ETApi ..> DExec : D27 产出并擦除 <<create>>
+ETApi ..> DTApi : D28 加密读写 <<use>>
+ESession ..> DSess : D29 创建/校验/销毁 <<use>>
+ESeed ..> DUser : D30 持久化映射 users 表 <<use>>
+EKv ..> DQ : D31 持久化映射 qdata 表 <<use>>
+DConv ..> DQ : D32 question 绑定 <<use>>
+DConv ..> DUser : D33 owner 绑定 <<use>>
+EKv ..> DB : D34 <<use>>
+ETApi ..> DB : D35 teacher_ai_* 事务 <<use>>
+EAcc ..> DB : D36 ai_access_* 读写 <<use>>
+ESeed ..> EKv : D37 <<use>>
+
+note bottom of CRd
+  无路由表：按 url+method 顺序匹配；
+  teacher 模式下 /teacher/ai-api 与 /ai/access
+  优先转交 teacher_api_route。
+end note
+note right of DB
+  数据管理部分与持久化的映射：
+  users / qdata（kv 同名表）、
+  teacher_ai_credentials / usage / charges / audit、
+  ai_access_grants / audit；表结构详见图3-6 ER 图。
+end note
+note bottom of BLogin
+  人机交互部分的隔离原则（第13讲 p97）已满足：
+  ① 边界类只负责输入收集、令牌存储、轮询提示与安全渲染，
+     业务请求一律转发给控制驱动部分（D1~D10）；
+  ② 全图无任何问题域/数据管理类指向边界类的箭头，
+     即问题域对象不主动发起与界面对象的通信；
+  ③ 界面与问题域之间隔着控制驱动部分，耦合度低。
+  命令组织（p86-91）：hash 路由 5 个基本命令
+  （#login / #register / #questions / #chat/{id} / #teacher-api）、
+  层次深度 2 层，符合 7+2 与“不超过三层”策略；
+  结构见图3-2，页面状态机见图3-3。
+end note
+@enduml
