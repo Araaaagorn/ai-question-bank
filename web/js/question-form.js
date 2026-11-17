@@ -43,10 +43,10 @@ const QuestionFormPage = (() => {
   }
 
   function resetForm() {
-    $('qContent').value = '';
-    $('qAnalysis').value = '';
-    $('qAnswer').value = '';
-    $('qKnowledge').value = '';
+    $('qfContent').value = '';
+    $('qfAnalysis').value = '';
+    $('qfAnswer').value = '';
+    $('qfKnowledge').value = '';
     $('qOptionsContainer').innerHTML = '';
     currentType = 'single_choice';
     document.querySelectorAll('input[name="qType"]').forEach((el) => {
@@ -87,10 +87,10 @@ const QuestionFormPage = (() => {
     try {
       const data = await API.questionDetail(id);
       const q = data.question || {};
-      $('qContent').value = q.content || '';
-      $('qAnalysis').value = q.analysis || '';
-      $('qAnswer').value = q.answer || '';
-      $('qKnowledge').value = (q.knowledge_points || []).join(', ');
+      $('qfContent').value = q.content || '';
+      $('qfAnalysis').value = q.analysis || '';
+      $('qfAnswer').value = q.answer || '';
+      $('qfKnowledge').value = (q.knowledge_points || []).join(', ');
       const type = q.type === 'short_answer' ? 'short_answer' : 'single_choice';
       setType(type);
       const container = $('qOptionsContainer');
@@ -118,11 +118,11 @@ const QuestionFormPage = (() => {
 
   function collectPayload() {
     const payload = {
-      content: $('qContent').value.trim(),
-      analysis: $('qAnalysis').value.trim(),
-      answer: $('qAnswer').value.trim(),
+      content: $('qfContent').value.trim(),
+      analysis: $('qfAnalysis').value.trim(),
+      answer: $('qfAnswer').value.trim(),
       type: currentType,
-      knowledge_points: $('qKnowledge').value.split(/[,，]/).map((s) => s.trim()).filter((s) => s)
+      knowledge_points: $('qfKnowledge').value.split(/[,，]/).map((s) => s.trim()).filter((s) => s)
     };
     if (currentType === 'single_choice') {
       payload.options = collectOptions();

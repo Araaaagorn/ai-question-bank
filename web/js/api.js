@@ -424,7 +424,9 @@ const API = (() => {
         if (Object.prototype.hasOwnProperty.call(payload, k)) merged[k] = payload[k];
       });
       if (payload.options !== undefined) {
-        merged.options = payload.type === 'single_choice'
+        /* 用合并后的 type 判断：部分更新可能不带 type，
+         * 此时不应因 payload.type 缺失而把已有选项误清空为 []。 */
+        merged.options = merged.type === 'single_choice'
           ? (payload.options || []).map((o) => ({ label: o.label, text: o.text }))
           : [];
       }

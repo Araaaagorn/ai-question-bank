@@ -10,6 +10,26 @@ function check(name, cond, detail) {
 }
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
+/* ════════ Part 0：index.html 静态检查（防 id 重复回归，见 PR #29 review） ════════
+ * 页面脚本的 getElementById 取文档中第一个匹配；表单页若复用详情页已有的
+ * id，会让 renderDetail 把内容写进隐藏的表单控件。此处直接解析 index.html
+ * 做唯一性断言，不依赖 DOM 环境。 */
+{
+  const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
+  const seen = new Set();
+  const dup = [];
+  for (const id of ids) { if (seen.has(id)) dup.push(id); seen.add(id); }
+  check('C0 index.html 无重复 id', dup.length === 0, '重复: ' + dup.join(','));
+  /* 对话页详情区依赖的元素必须存在且唯一（chat.js renderDetail 引用） */
+  for (const need of ['qContent', 'qAnswer', 'qAnalysis', 'qKnowledge', 'qOptions', 'qType']) {
+    check('C0 详情页元素 #' + need + ' 存在且唯一', ids.filter((x) => x === need).length === 1);
+  }
+  const fors = [...html.matchAll(/\bfor="([^"]+)"/g)].map((m) => m[1]);
+  const badFor = fors.filter((f) => !seen.has(f));
+  check('C0 label for 均指向存在的 id', badFor.length === 0, '无效: ' + badFor.join(','));
+}
+
 /* ════════ Part A：api.js CRUD 回退与 mock 契约 ════════ */
 (async () => {
   /* A1: 真实 403 → 原样抛出，不被 mock 掩盖 */
@@ -186,7 +206,7 @@ async function partB() {
 
   globalThis.__QF.show('1');
   await tick(); await tick();
-  check('B3f 编辑模式加载详情', questionDetailCalls.includes('1') && el('qContent').value === '题干A');
+  check('B3f 编辑模式加载详情', questionDetailCalls.includes('1') && el('qfContent').value === '题干A');
   check('B3g 选项渲染进容器', el('qOptionsContainer').children.length === 2, 'children=' + el('qOptionsContainer').children.length);
 
   /* B4: 路由集成 —— route() 单点隐藏 */
