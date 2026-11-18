@@ -88,12 +88,14 @@
   - `student`：仅 `status == active` 的试卷（不按教师过滤）。
 - 成功：`200` + `{"exams":[列表项, ...]}`，按 `id` 升序。
 - 空列表返回 `{"exams":[]}`。
+- 单卷读取失败（如悬空引用等存储异常）时**只隔离该卷**：该卷不出现在列表中，其余试卷照常返回 `200`，服务端记录固定分类日志 `[exams] list_skip_broken_exam (exam_id=N, reason=...)`（不含用户内容）。隔离规则见 §11。
 - 本阶段无分页、无检索，查询参数不过滤列表。
 
 ### 4.2 `GET /api/v1/exams/{id}` — 详情
 
 - 可见范围与 4.1 一致；不可见（含 `archived` 对 `student`）一律 `404 EXAM_NOT_FOUND`，不泄露存在性。
 - 成功：`200` + `{"exam":{详情对象}}`。
+- 存储异常（如悬空引用、写回失败）→ `500 EXAM_STORE_FAILED`，与「不存在 / 不可见」的 `404` 严格区分；不返回缺题的半截详情。
 - `id` 必须是正的十进制整数；不是正整数、溢出或含额外路径段 → `404 EXAM_NOT_FOUND`。
 
 ### 4.3 `POST /api/v1/exams` — 创建
@@ -166,6 +168,7 @@
 - 权限：`teacher`（仅本人） / `admin`（全部）。
 - 语义：从试卷移除 `question_id == qid` 的条目，并将后续题目 `position` 自动补全为 1..n。
 - `qid` 不是试卷内的 `question_id` → `404 EXAM_NOT_FOUND`。
+- `qid` 必须是正的十进制整数且到路径末尾为止；尾随 `/` 或额外路径段（如 `/questions/7/extra`）→ `404 EXAM_NOT_FOUND`，且不得命中移除逻辑。
 - `status=archived` → `409 EXAM_ARCHIVED`。
 - 成功：`200` + `{"exam":{详情对象}}`。
 
@@ -224,7 +227,7 @@
 | 404 | `EXAM_NOT_FOUND` | 试卷不存在 / 非法 id / 越权不可见 / 移除不存在的引用 |
 | 405 | `METHOD_NOT_ALLOWED` | 方法不允许，响应含正确的 `Allow` 头 |
 | 409 | `EXAM_ARCHIVED` | `archived` 试卷上的编辑操作 |
-| 500 | `EXAM_STORE_FAILED` | 存储失败 |
+| 500 | `EXAM_STORE_FAILED` | 存储失败（含悬空引用导致的整卷读取失败；列表会隔离该卷，见 §11） |
 
 错误响应统一格式：
 
@@ -331,5 +334,12 @@ HTTP/1.1 200 OK
 - 存储层独立为 `server/src/exams.c` + `server/include/exams.h`，复用 `AppConfig.db` 单一连接，不在路由层写 SQL。
 - 路由层新增 `handle_exams`，在 `route_dispatch` 中于 `/api/` 兜底 404 之前按 `/api/v1/exams` 前缀分发。
 - `position` 归一化、题目引用校验、`archived` 校验均在 `exams.c` 内完成，路由只做参数抽取与状态码映射。
+- 试卷 `id` 分配与写入在同一个 `BEGIN IMMEDIATE` 事务内完成（`exams_create`）：并发下不会重复取号，任一字段写失败即 `ROLLBACK`，不留半套元数据。
 - 题目删除联动：`handle_question_delete` 成功后调用 `exams_purge_question(db, qid)`，从所有试卷移除该引用并重排 `position`。清理失败不回滚已成功的题目删除、不返回 500：只记录固定分类日志 `[exams] purge_question_failed (question_id=N)`（不含用户内容），仍返回 200。因为题目已删除，试卷侧悬空引用是可修复的最终一致数据。
+- 残留悬空引用时的行为（可观测、可修复；本阶段无自动对账任务）：
+  - 存储层读取仍**硬失败**，不返回缺题的半截详情；详情接口据此返回 `500 EXAM_STORE_FAILED`（§4.2），与 404 区分。
+  - 列表按 §4.1 隔离该卷并记录 `[exams] list_skip_broken_exam`，不影响其他角色读取列表。
+  - 鉴权只读元数据（`exams_meta_get`，不内联题目），因此所有者与 `admin` 仍可 `DELETE /api/v1/exams/{id}` 删除该卷完成修复；这是当前唯一的自助修复路径。
+  - 改动元数据、状态切换、题目编排会先回读整卷：读不回来即拒绝写入，避免「已写入但响应 500」；`DELETE /exams/{id}` 不做该校验，以保证可修复。
+  - 逐卷写回失败记录 `[exams] purge_write_failed (exam_id=N, question_id=M)`，用于定位仍待处理的试卷。
 - 本阶段不在文档中出现实现中不存在的字段；新接口「先落模块文档再写代码」（见 `docs/AGENT.md` §7.3）。
