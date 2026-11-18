@@ -55,7 +55,7 @@ int exams_get(sqlite3 *db, int id, cJSON **out);
  *        不影响元数据读取，所有者/管理员因此仍能删除需要修复的试卷（§11）。
  * @param out_teacher_id 可为 NULL。
  * @param status/status_sz 可为 NULL/0，此时内部使用临时缓冲。
- * @return EXAMS_OK / EXAMS_NOT_FOUND / EXAMS_INVALID_REQUEST
+ * @return EXAMS_OK / EXAMS_NOT_FOUND / EXAMS_INVALID_REQUEST（不会返回 STORE_FAILED）
  */
 int exams_meta_get(sqlite3 *db, int id, int *out_teacher_id, char *status,
                    size_t status_sz);
