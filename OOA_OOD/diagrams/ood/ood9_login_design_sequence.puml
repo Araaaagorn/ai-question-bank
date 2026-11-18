@@ -1,0 +1,172 @@
+@startuml ood9_login_design_sequence
+' AI+题库智能教学平台 — 图3-10 OOD 设计顺序图：登录与身份认证（人机交互 + 控制驱动 + 数据管理）
+' **新增原因（模板 §3.2 设计说明要求）**：OOA 图2-6 按第10讲 p14 只保留分析层对象
+'   （平台服务接口 / 用户 / 登录会话），不含 GUI 与 DBMS 对象。经人机交互部分设计
+'   （第13讲 p74-97）新增界面类 AuthPage / RegisterPage / API，经控制驱动部分设计
+'   （第14讲 p3-16）把 OOA 的单一主动类“平台服务接口”拆分为 HttpServer + RouteDispatcher
+'   + AuthController，经数据管理部分设计（第14讲 p23-46）新增 SessionManager / DbSeed / KvStore，
+'   因此需要一张设计级顺序图说明这些新增/调整对象之间的消息与时序。
+' 课程依据（第11讲）：p6 对象表示法“[对象名] : 类名”；p7 执行规约；p9 同步返回可省略；
+'   p10 异步消息；p16-19 opt/alt/loop 组合片段；p20-21 发起者居左、创建对象显式指明、
+'   同一控制线程内接收者执行规约嵌套在发送者之内。
+' 第14讲 p17-19 控制流间通信：CF1（浏览器 SPA）↔ CF2（后端 MHD 轮询线程）为
+'   **远程过程调用**（HTTP/JSON over 网络）；CF2 内部各对象为**操作调用**（同步）。
+' 依据：web/js/{app,auth,api}.js、server/src/{http_server,routes,auth,db,kv_store}.c、docs/auth.md
+autonumber
+skinparam shadowing false
+' 课程格式（第11讲 p6）：对象只在顺序图**顶部**标注一次（[对象名] : 类名）；
+' 下方不再重复绘制对象框与对象名，故关闭 PlantUML 默认的底部 footbox。
+hide footbox
+
+actor "用户\n(学生/教师/管理员)" as U
+participant "authPage : 登录页 AuthPage" as AP <<边界类>>
+participant "regPage : 注册页 RegisterPage" as RP <<边界类>>
+participant "api : API客户端封装 API" as API <<边界类>>
+participant "rd : 路由分发器 RouteDispatcher" as RD <<控制类>>
+participant "ac : 认证控制器 AuthController" as AC <<控制类>>
+participant "sm : 会话管理 SessionManager" as SM <<数据管理类>>
+participant "seed : 种子与用户数据访问 DbSeed" as SEED <<数据管理类>>
+participant "kv : KV存储层 KvStore" as KV <<数据管理类>>
+database "db : SQLite\nusers 表" as DB
+
+== 登录（CF1 → CF2：远程过程调用；CF2 内部：同步操作调用） ==
+U -> AP : 输入用户名与密码并提交
+activate AP
+AP -> API : login(用户名, 密码)
+activate API
+API -> RD : POST /api/v1/auth/login（HTTP/JSON，请求体含用户名与密码）
+activate RD
+RD -> AC : handle_login(conn, url, method, body, cfg)
+activate AC
+AC -> AC : 解析请求体（cJSON_Parse）
+opt 请求体为空 / JSON 非法 / 缺少必填字段
+  AC --> API : 400 缺少 username 或 password
+end
+AC -> SEED : db_query_password_hash(db, username)
+activate SEED
+SEED -> KV : kv_get(db, "users", username, "password_hash")
+activate KV
+KV -> DB : SELECT value FROM users WHERE key_name = ? AND value_name = ?
+activate DB
+DB --> KV : 存储的哈希，或无记录
+deactivate DB
+KV --> SEED : 哈希或空
+deactivate KV
+SEED --> AC : 密码哈希或空
+deactivate SEED
+AC -> AC : hash_password(密码) 并与存储哈希比对
+
+alt 用户不存在 或 哈希不匹配
+  AC --> API : 401 用户名或密码错误（不区分原因，防止账号枚举）
+  deactivate AC
+  API --> AP : 抛出错误
+  deactivate API
+  AP --> U : 在登录页显示错误提示
+  deactivate AP
+else 校验通过
+  AC -> SEED : db_query_user_by_username(db, username)
+  activate SEED
+  SEED -> KV : kv_get_all(db, "users", username)
+  activate KV
+  KV -> DB : SELECT value_name, value FROM users WHERE key_name = ?
+  activate DB
+  DB --> KV : 字段行集
+  deactivate DB
+  KV --> SEED : 用户字段集
+  deactivate KV
+  SEED --> AC : {id, username, name, role}
+  deactivate SEED
+  AC -> SM : session_create(user_id, role, name)
+  activate SM
+  SM -> SM : 生成随机 64 位十六进制令牌；expires_at = now + 86400；\n每 16 次创建触发一次 session_cleanup()
+  alt 会话槽耗尽且清理后仍不足 或 随机源失败
+    SM --> AC : 空
+    deactivate SM
+    AC --> API : 500 创建会话失败
+  else 创建成功
+    SM --> AC : 会话令牌
+    deactivate SM
+    AC --> API : 200 {token, user{id, username, name, role}}
+    deactivate AC
+    API -> API : setAuth(令牌, 用户)（本地存储；file:// 下降级为内存）
+    API --> AP : 登录结果
+    deactivate API
+    AP --> U : 跳转到题目列表页（#questions）
+    deactivate AP
+  end
+end
+deactivate RD
+
+== 注册（注册成功即自动登录，对应 OOA 图2-6 的 «include» 创建登录会话） ==
+U -> RP : 填写注册表单并提交（前端仅开放 student / teacher）
+activate RP
+RP -> API : register(用户名, 密码, 确认密码, 角色)
+activate API
+API -> RD : POST /api/v1/auth/register
+activate RD
+RD -> AC : handle_register(conn, url, method, body, cfg)
+activate AC
+AC -> AC : 校验：用户名非空、两次密码一致、密码 ≥8 位且含字母和数字、\n角色 ∈ {student, teacher, admin}
+opt 校验失败
+  AC --> API : 400（返回对应的具体错误文案）
+end
+AC -> SEED : db_create_user(db, username, hash, role)
+activate SEED
+SEED -> KV : kv_set × 5（id / username / name / role / password_hash）
+activate KV
+KV -> DB : INSERT OR REPLACE INTO users (key_name, value_name, value)
+activate DB
+DB --> KV : 成功
+deactivate DB
+KV --> SEED : 写入结果
+deactivate KV
+SEED --> AC : 0 成功 / 1 用户名已存在 / −1 存储错误
+deactivate SEED
+alt 用户名已存在
+  AC --> API : 409 用户名已存在
+else 创建成功
+  AC -> SM : session_create(user_id, role, name)
+  activate SM
+  SM --> AC : 会话令牌
+  deactivate SM
+  AC --> API : 201 {token, user}（注册即登录）
+end
+deactivate AC
+deactivate RD
+API --> RP : 注册结果
+deactivate API
+RP --> U : 成功则跳转题目列表页；失败则显示错误文案
+deactivate RP
+
+== 登出（命令来自顶部导航栏，见图3-2；导航栏未单列为设计类） ==
+U -> API : 触发退出命令（顶部导航栏“退出”）
+activate API
+API -> API : ChatPage.resetConversations() 清空对话标识映射，\n防止换账号后复用上一用户的 conversation_id
+API -> RD : POST /api/v1/auth/logout（Bearer 令牌）
+activate RD
+RD -> AC : handle_logout(conn, url, method, body, cfg)
+activate AC
+AC -> SM : session_destroy(token)
+activate SM
+SM --> AC : 已销毁（令牌无效时静默成功）
+deactivate SM
+AC --> API : 200 已登出
+deactivate AC
+deactivate RD
+API -> API : clearAuth() 清除本地令牌与用户信息
+API --> U : 回到登录页（#login）
+deactivate API
+
+note over AP, DB
+  四部分设计的落点：
+  · 人机交互部分（第13讲）：AuthPage / RegisterPage / API 三个界面类只负责输入收集、
+    本地令牌存储与错误展示，不含任何业务判定；密码强度与一致性校验由后端
+    AuthController 承担，前端仅做同规则的体验性提示。
+  · 控制驱动部分（第14讲）：CF2 内 RouteDispatcher → AuthController → 数据管理类
+    全部为**同步操作调用**，接收者执行规约嵌套在发送者之内（第11讲 p21）。
+  · 数据管理部分（第14讲 p44-46 方案2）：由 DbSeed / KvStore / SessionManager 统一
+    承担存取，问题域类 User / Session 不含 SQL；users 表以 (key_name, value_name)
+    为复合主键（对象标识见《03》§3.1.6.4 与图3-6）。
+  · 问题域部分：User / Session 的属性与 OOA 图2-4 一致，未新增字段。
+end note
+@enduml

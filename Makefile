@@ -14,7 +14,7 @@
 SHELL := /bin/bash
 
 # 所有需要纳入统一构建的模块目录（按需增删）
-MODULES := ai-service server
+MODULES := ai-service server web
 
 .PHONY: help setup env-check install lint test build run clean $(MODULES)
 

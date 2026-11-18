@@ -14,6 +14,9 @@ function route() {
   $('page-register').classList.add('hidden');
   /* 教师 AI 配置页同理，只在 #teacher-api 下显示 */
   $('page-teacher-api').classList.add('hidden');
+  /* 题目表单页同理，只在 #question-form/ 下显示；
+   * 集中隐藏可避免每个页面的 show() 都要枚举新页面。 */
+  $('page-question-form').classList.add('hidden');
   if (hash === '#register') {
     RegisterPage.show();
     return;
@@ -44,6 +47,9 @@ function route() {
   } else if (hash.startsWith('#chat/')) {
     const id = hash.split('/')[1];
     ChatPage.show(id);
+  } else if (hash.startsWith('#question-form/')) {
+    const id = hash.split('/').slice(1).join('/');
+    QuestionFormPage.show(id);
   } else if (hash === '#teacher-api') {
     TeacherApiPage.show();
   } else {

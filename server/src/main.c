@@ -8,6 +8,7 @@
 #include "kv_store.h"
 #include "ai_access.h"
 #include "teacher_api.h"
+#include "exams.h"
 
 int main(void) {
     AppConfig cfg = config_load();
@@ -57,6 +58,11 @@ int main(void) {
 
     if (teacher_api_init(cfg.db) != 0) {
         fprintf(stderr,"教师API存储初始化失败\n"); sqlite3_close(cfg.db); return 1;
+    }
+
+    if (exams_init(cfg.db) != 0) {
+        fprintf(stderr, "✘ 试卷存储初始化失败\n");
+        sqlite3_close(cfg.db); return 1;
     }
 
     if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) {

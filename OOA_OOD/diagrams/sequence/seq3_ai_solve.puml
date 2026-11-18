@@ -1,0 +1,197 @@
+@startuml seq3_ai_solve
+' AI+题库智能教学平台 — 图2-8 顺序图3：学生提交题目并获取 AI 解答（OOA 分析层，默认 teacher 路由模式）
+' 课程依据（第11讲）：
+'   p6/p7  对象表示法“[对象名] : 类名”；执行规约顶端对齐进入箭头、底端对齐返回箭头
+'   p9     同步消息的返回可省略（暗示执行规约结束）——本图对“无返回值的确认类消息”省略返回箭头
+'   p10    异步消息用开放箭头；异步返回是另一条异步消息
+'   p13    消息循环用 loop 组合片段表达
+'   p16-19 opt / alt / par / loop 组合片段
+'   p20-21 发起交互的对象放左边；创建对象要用消息箭线显式指明（<<create>>）；
+'          同一控制线程内接收者执行规约嵌套在发送者执行规约之内
+' 第10讲 p14：OOA 模型独立于实现环境。故本图**不含**对话页/Pi 任务客户端（人机交互部分）、
+'   路由分发器/对话代理控制器/AI 客户端/Pi 内部接口（控制驱动部分的设计拆分）与 SQLite（数据管理部分）；
+'   这些设计对象、事务边界与退还补偿的语句级顺序见 OOD 图3-7 与图3-10。
+' 第14讲 p3：本图跨三个控制流——CF2（pi 所在的后端请求处理）、CF4（jobs 任务泵）、
+'   CF5（agent 每任务执行流），跨控制流的消息用异步箭头表示。
+' 说明：消息名与图2-4/图2-5 类图操作一一对应。
+' 依据：server/src/{routes,teacher_api}.c、ai-service/src/{jobs,agent,teaching,math-tools}.ts、
+'       docs/pi-chat-api.md、docs/teacher-api.md、docs/软件需求说明书.md UC-04
+autonumber
+skinparam shadowing false
+' 课程格式（第11讲 p6）：对象只在顺序图**顶部**标注一次（[对象名] : 类名）；
+' 下方不再重复绘制对象框与对象名，故关闭 PlantUML 默认的底部 footbox。
+hide footbox
+
+actor "学生" as S
+participant "pi : 平台服务接口" as PI <<主动类>>
+participant "session : 登录会话" as SESS
+participant "question : 题目" as Q
+participant "tapi : 教师API配置" as TAPI
+participant "quota : 日额度使用" as QUOTA
+participant "jobs : 任务队列" as JOBS <<主动类>>
+participant "conv : 对话" as CONV
+participant "job : AI解答任务" as JOB
+participant "agent : Agent执行器" as AGENT <<主动类>>
+actor "AI模型供应商\n(外部系统)" as MP
+
+== 阶段 1：查询 AI 使用资格与额度（用况 UC2-01，不扣次） ==
+S -> PI : 查询AI使用资格与额度(题目标识)
+activate PI
+PI -> SESS : 校验会话(令牌)
+activate SESS
+SESS --> PI : 会话（含角色）或“无效”
+deactivate SESS
+PI -> Q : 组装题目信息()
+activate Q
+Q --> PI : 题目（含归属教师、状态）
+deactivate Q
+PI -> TAPI : 解析可用凭证(用户, 角色, 题目, 是否扣次 = 否)
+activate TAPI
+TAPI -> QUOTA : 读取当日用量()
+activate QUOTA
+QUOTA --> TAPI : 已用次数与上限
+deactivate QUOTA
+TAPI --> PI : 资格与额度快照（是否可用、剩余次数、重置时刻）
+deactivate TAPI
+PI --> S : 可用性与剩余额度；不可用时说明原因（未配置 / 已停用 / 额度用尽）
+deactivate PI
+
+== 阶段 2：提交 AI 解答任务（用况 UC2-02，受理后异步执行） ==
+S -> PI : 提交AI解答任务(题目标识, 问题, 教学模式)
+activate PI
+PI -> SESS : 校验会话(令牌)
+activate SESS
+SESS --> PI : 会话（含角色）或“无效”
+deactivate SESS
+PI -> Q : 组装题目信息()
+activate Q
+Q --> PI : 题目（含归属教师、状态）
+deactivate Q
+alt 会话无效
+  PI --> S : 拒绝（未登录或登录已过期）
+else 题目不存在 或 状态 ≠ 已发布
+  PI --> S : 拒绝（题目不可用）
+else 会话与题目均可用
+  PI -> TAPI : 解析可用凭证(用户, 角色, 题目, 是否扣次 = 是)
+  activate TAPI
+  TAPI -> QUOTA : 扣减一次()
+  activate QUOTA
+  alt 学生当日已用次数 ≥ 上限
+    QUOTA --> TAPI : 扣次失败（额度用尽）
+  else 额度充足
+    QUOTA --> TAPI : 扣次成功（返回扣次凭据）
+  end
+  deactivate QUOTA
+  alt 教师未配置 或 已停用 或 额度用尽
+    TAPI --> PI : 拒绝 + 额度快照
+    deactivate TAPI
+    PI --> S : 拒绝（未配置 / 已停用 / 额度用尽，附重置时刻）
+  else 校验通过
+    TAPI --> PI : 可用凭证（解密后的模型密钥，短暂驻留、用后擦除）
+    deactivate TAPI
+    PI -> JOBS : 受理任务(提交请求)
+    activate JOBS
+    JOBS -> CONV : 创建对话(归属用户, 题目, 教学模式)
+    activate CONV
+    deactivate CONV
+    JOBS -> JOB : <<create>> 创建任务(归属用户, 教学上下文)
+    activate JOB
+    JOB --> JOBS : 任务（状态 = 排队中）
+    deactivate JOB
+    JOBS -> CONV : 占用任务锁(任务标识)
+    activate CONV
+    deactivate CONV
+    JOBS --> PI : 受理视图（任务标识、对话标识、状态 = 排队中）
+    deactivate JOBS
+    opt AI 执行服务明确拒绝（参数非法 / 任务不存在 / 对话冲突 / 请求过大 / 服务繁忙）
+      PI -> QUOTA : 退还一次()
+      activate QUOTA
+      deactivate QUOTA
+      PI --> S : 拒绝（已退还扣次，本次不计额度）
+    end
+    PI --> S : 已受理（异步执行；返回任务标识与对话标识）
+  end
+end
+deactivate PI
+
+== 阶段 3：异步执行（任务队列主动推进，位于另一控制流 CF4/CF5） ==
+activate JOBS
+JOBS -> JOBS : 调度出队任务()
+note right of JOBS
+  守护条件：运行中任务数 < 并发上限（默认 4），
+  且剩余预算 > 0；由任务队列自主触发，
+  不依赖任何外部请求（主动对象特征）。
+end note
+JOBS -> JOB : 置为执行中()
+activate JOB
+deactivate JOB
+JOBS ->> AGENT : 启动执行(执行配置, 提交请求, 对话历史, 教学上下文)
+activate AGENT
+loop 至多 3 次模型调用、6 次工具调用，总预算 30 秒
+  AGENT ->> MP : 请求模型解答(题目, 问题, 按教学模式注入的教学技能)
+  MP -->> AGENT : 模型输出（可含工具调用请求）
+  AGENT -> AGENT : 调用受限数学工具（四则运算 / 求解一元一次方程 / 校验方程解）
+end
+AGENT -->> JOBS : 解答结果（回复、模型、用量、消息集）
+deactivate AGENT
+JOBS -> JOB : 置为成功(解答结果)
+activate JOB
+deactivate JOB
+JOBS -> CONV : 追加对话历史(消息集)
+activate CONV
+deactivate CONV
+JOBS -> CONV : 释放任务锁()
+activate CONV
+deactivate CONV
+deactivate JOBS
+
+== 阶段 4：轮询查询任务状态（用况 UC2-04） ==
+loop 客户端每隔 800 毫秒查询一次，最长等待 45 秒
+  S -> PI : 查询AI任务状态(任务标识)
+  activate PI
+  PI -> JOBS : 查询任务(任务标识, 归属用户)
+  activate JOBS
+  JOBS -> JOB : 组装任务视图()
+  activate JOB
+  JOB --> JOBS : 任务视图
+  deactivate JOB
+  alt 任务不存在 或 归属他人
+    JOBS --> PI : 视为不存在
+  else 任务存在
+    JOBS --> PI : 任务视图（状态、回复、用量、对话标识、提示层级）
+  end
+  deactivate JOBS
+  PI --> S : 任务状态（排队中 / 执行中 / 成功并含解答 / 失败并含错误码）
+  deactivate PI
+end
+
+== 取消任务（用况 UC2-05，可选） ==
+opt 学生主动取消或切换题目
+  S -> PI : 取消AI任务(任务标识)
+  activate PI
+  PI -> JOBS : 取消任务(任务标识, 归属用户)
+  activate JOBS
+  JOBS ->> AGENT : 取消执行()
+  JOBS -> JOB : 置为已取消()
+  activate JOB
+  deactivate JOB
+  JOBS -> CONV : 释放任务锁()
+  activate CONV
+  deactivate CONV
+  JOBS --> PI : 任务视图（状态 = 已取消）
+  deactivate JOBS
+  PI --> S : 已取消（本轮不追加对话历史）
+  deactivate PI
+end
+
+note over PI, MP
+  控制流与消息类型（第14讲 p3/p17-19）：
+  阶段 1/2/4 与取消均在 CF2（后端请求处理控制流）内**同步**执行，
+  因此接收者执行规约嵌套在 pi 的执行规约之内；
+  阶段 3 位于 CF4（任务队列）与 CF5（Agent 执行器），
+  与 CF2 之间是**邮箱式异步**通信：受理即返回，结果由客户端轮询取回，
+  故跨控制流消息用异步箭头（开放箭头）表示，长耗时模型等待不占用 CF2。
+  教学技能与受限数学工具在本图中作为 agent 自消息的参数出现，
+  其依赖关系（D7/D8）见图2-5 类图，不再单列生命线以保持图面清晰。
+end note
+@enduml

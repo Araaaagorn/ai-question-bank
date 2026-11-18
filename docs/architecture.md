@@ -28,7 +28,7 @@
 ```
 
 - `web/` 为纯静态页面（HTML/CSS/JS），由 C 服务端直接托管，**无 Node/npm 工具链**。
-- `server/` 为唯一公共业务入口：现有登录、题目读取、AI授权和任务代理。多租户业务隔离、试卷/解答树与用户额度属于后续目标，当前未完成。
+- `server/` 为唯一公共业务入口：现有登录、题目读取/CRUD、AI授权与任务代理，以及试卷组织与浏览（F03）。多租户业务隔离、解答树与用户额度属于后续目标，当前未完成。
 - 所有大模型调用由后端统一代理，**API Key只存在于可信后端：教师配置加密入库，主密钥独立注入；platform兼容配置从Pi环境读取**。
 
 ## 2. 后端分层（server/）
@@ -42,6 +42,7 @@
 | `src/routes.c` + `include/routes.h` | 路由 | /api/v1/* JSON API + 静态文件服务（防路径穿越） |
 | `src/ai_access.c` + `include/ai_access.h` | AI授权 | 复用共享SQLite连接查询权限，默认拒绝；增量建表不授权旧用户 |
 | `src/ai_client.c` + `include/ai_client.h` | AI 客户端 | libcurl 调用内部 Pi 任务接口（提交/查询/取消），不直接等待模型 |
+| `src/exams.c` + `include/exams.h` | 试卷 | 试卷 CRUD、题目编排（增/删/排序/分值）、按角色列表过滤；数据存 kv_store 的 `edata` namespace，题目删除时联动清理引用 |
 | `third_party/cJSON.*` | JSON 库 | 单文件 MIT 协议，随仓库分发 |
 | `tests/run_tests.sh` | 冒烟测试 | 启动 → 健康检查 → 静态页 → 关闭 |
 

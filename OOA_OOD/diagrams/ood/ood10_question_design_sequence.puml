@@ -1,0 +1,134 @@
+@startuml ood10_question_design_sequence
+' AI+题库智能教学平台 — 图3-11 OOD 设计顺序图：教师题目管理（控制驱动 + 数据管理）
+' **新增原因（模板 §3.2 设计说明要求）**：OOA 图2-7 按第10讲 p14 不含 GUI 与 DBMS 对象。
+'   经控制驱动部分设计（第14讲）把 OOA 的单一主动类“平台服务接口”拆分为
+'   RouteDispatcher + QuestionController；经数据管理部分设计（第14讲 p23-46）
+'   由 KvStore 统一承担 qdata 命名空间的存取，问题域类 Question 不含 SQL。
+'   本图说明这些设计对象之间的消息、时序与**持久化语句级顺序**。
+' 人机交互部分现状（🟡 集成差距）：web/ 未提供题目管理页面，教师当前经 HTTP 接口工具
+'   调用同一组接口；建议设计的“题库管理页”见图3-2（⬜），故本图不画界面类生命线，
+'   以免把未实现的界面类当作既有设计。
+' 课程依据（第11讲 p6/p7/p9/p16-21；第14讲 p17-19 控制流间通信）
+'   CF1（浏览器 / 接口工具）↔ CF2（后端 MHD 轮询线程）为远程过程调用；
+'   CF2 内部各对象为同步操作调用，接收者执行规约嵌套在发送者之内。
+' 依据：server/src/routes.c（handle_questions / handle_question_create / _update / _delete、
+'       extract_question_fields、next_question_id、kv_to_question、parse_question_id）、
+'       server/src/kv_store.c、docs/questions.md
+autonumber
+skinparam shadowing false
+' 课程格式（第11讲 p6）：对象只在顺序图**顶部**标注一次（[对象名] : 类名）；
+' 下方不再重复绘制对象框与对象名，故关闭 PlantUML 默认的底部 footbox。
+hide footbox
+
+actor "教师\n(或管理员)" as T
+participant "rd : 路由分发器 RouteDispatcher" as RD <<控制类>>
+participant "qc : 题目控制器 QuestionController" as QC <<控制类>>
+participant "sm : 会话管理 SessionManager" as SM <<数据管理类>>
+participant "kv : KV存储层 KvStore" as KV <<数据管理类>>
+database "db : SQLite\nqdata 表" as DB
+
+== 公共前置：会话校验与写权限校验（新增/修改/删除共用） ==
+T -> RD : 写请求（POST / PUT / DELETE /api/v1/questions[/{id}]，Bearer 令牌）
+activate RD
+RD -> QC : handle_questions(conn, url, method, body, cfg)
+activate QC
+QC -> SM : session_validate(extract_bearer_token(header))
+activate SM
+SM --> QC : 会话（含角色）或空
+deactivate SM
+alt 未登录 或 令牌已过期
+  QC --> RD : 401 未登录或令牌已过期
+end
+QC -> QC : 写操作角色检查：角色 ∈ {teacher, admin}
+alt 角色为学生
+  QC --> RD : 403 仅教师或管理员可执行此操作\n（权限检查先于题目存在性校验）
+end
+
+== 新增题目（POST /api/v1/questions） ==
+QC -> QC : cJSON_Parse + extract_question_fields(...)
+note right of QC
+  字段校验规则：content 非空；type ∈ {single_choice, short_answer}；
+  answer 非空；单选题选项非空且 answer ∈ 选项 label；
+  简答题选项必须为空数组；knowledge_points 为字符串数组。
+end note
+opt 字段校验失败
+  QC --> RD : 400（具体字段原因）
+end
+QC -> KV : kv_list_keys(db, "qdata")（next_question_id：取最大数字标识 + 1）
+activate KV
+KV -> DB : SELECT key_name FROM qdata
+activate DB
+DB --> KV : 全部题目标识
+deactivate DB
+KV --> QC : 标识集合
+deactivate KV
+QC -> KV : kv_set × 8（content / options / answer / analysis /\ntype / knowledge_points / teacher_id = 会话用户 / status = active）
+activate KV
+KV -> DB : INSERT OR REPLACE INTO qdata (key_name, value_name, value) × 8
+activate DB
+DB --> KV : 成功
+deactivate DB
+KV --> QC : 写入结果
+deactivate KV
+note over QC, DB
+  ⚠ 数据完整性缺口：这 8 次写入是**顺序写、非单一事务**，
+  中途失败会留下半写题目（记录于《04》§4.3 建议 3：
+  建议包入单事务或提供补偿）。本图如实反映现状，不作美化。
+end note
+QC -> KV : kv_to_question(key, db)（回读组装题目对象）
+activate KV
+KV -> DB : SELECT value_name, value FROM qdata WHERE key_name = ?
+activate DB
+DB --> KV : 字段行集
+deactivate DB
+KV --> QC : 题目对象（剥离 seed_key 与 teacher_id）
+deactivate KV
+QC --> RD : 201 {question:{...}}
+RD --> T : 展示创建结果
+
+== 修改题目（PUT /api/v1/questions/{id}，部分更新） ==
+T -> RD : PUT /api/v1/questions/{id}
+RD -> QC : handle_question_update(...)
+QC -> QC : parse_question_id：非正整数 / 溢出 / 多余路径段 → 404
+QC -> KV : kv_to_question(id, db)（读旧题）
+activate KV
+KV --> QC : 旧题或空
+deactivate KV
+alt 题目不存在
+  QC --> RD : 404 question not found
+end
+QC -> QC : 旧题与请求体合并（id 不可改；至少含一个可更新字段），\n对合并结果执行与新增相同的整体校验
+opt 合并后校验失败
+  QC --> RD : 400（具体字段原因）
+end
+QC -> KV : kv_set 覆盖被更新字段
+activate KV
+KV --> QC : 写入结果
+deactivate KV
+QC --> RD : 200 {question:{...}}
+RD --> T : 展示修改结果
+
+== 删除题目（DELETE /api/v1/questions/{id}，物理删除） ==
+T -> RD : DELETE /api/v1/questions/{id}
+RD -> QC : handle_question_delete(...)
+QC -> KV : kv_delete_key(db, "qdata", key)
+activate KV
+KV -> DB : DELETE FROM qdata WHERE key_name = ?
+activate DB
+DB --> KV : 成功
+deactivate DB
+KV --> QC : 删除结果
+deactivate KV
+QC --> RD : 200 {status:"ok"}
+deactivate QC
+deactivate RD
+RD --> T : 展示删除结果
+
+note over RD, DB
+  读取链路（GET 列表 / 详情）对所有登录角色开放：列表遍历 qdata 全部 key 组装，
+  当前**无分页与检索**（检索为目标功能，见图2-3 UC3-05）；
+  数据库文件缺失时返回 500 而非伪装空列表。
+  对象标识（第14讲 p28）：qdata 以 (key_name = 题目标识, value_name = 字段名)
+  复合主键定位“某题目的某属性”，属 EAV 键值行存储，取舍见《03》§3.1.6.4 与图3-6。
+end note
+@enduml
