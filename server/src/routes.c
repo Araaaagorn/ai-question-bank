@@ -1047,15 +1047,35 @@ static cJSON *exams_parse_body(struct MHD_Connection *conn, const char *body,
     return root;
 }
 
+/* 读取整卷详情；失败时按错误码回复（不存在 → 404，存储异常 → 500）并返回 NULL。
+ * 悬空引用等存储异常必须与「不存在 / 不可见」区分（docs/exams.md §4.2、§8）。 */
+static cJSON *exam_detail_or_reply(struct MHD_Connection *conn, sqlite3 *db,
+                                   int exam_id) {
+    cJSON *detail = NULL;
+    ExamsError err = exams_get(db, exam_id, &detail);
+    if (err == EXAMS_OK) return detail;
+
+    reply_exam_error(conn, exams_http_status(err), exams_code_of(err),
+                     err == EXAMS_NOT_FOUND ? "exam not found" : "读取试卷失败");
+    return NULL;
+}
+
+/* 写操作前置校验：整卷必须能读回，否则拒绝写入，
+ * 避免「已写入但响应 500」的半成功（docs/exams.md §5）。 */
+static int exam_readable_or_reply(struct MHD_Connection *conn, sqlite3 *db,
+                                  int exam_id) {
+    cJSON *detail = exam_detail_or_reply(conn, db, exam_id);
+    if (detail == NULL) return 0;
+    cJSON_Delete(detail);
+    return 1;
+}
+
 /* 读取并返回 {"exam":{...}}。 */
 static enum MHD_Result respond_exam_detail(struct MHD_Connection *conn,
                                            int exam_id, const AppConfig *cfg,
                                            unsigned int status) {
-    cJSON *detail = NULL;
-    if (exams_get(cfg->db, exam_id, &detail) != EXAMS_OK) {
-        return reply_exam_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
-                                "EXAM_STORE_FAILED", "读取试卷失败");
-    }
+    cJSON *detail = exam_detail_or_reply(conn, cfg->db, exam_id);
+    if (detail == NULL) return MHD_YES;
     cJSON *resp = cJSON_CreateObject();
     if (resp == NULL || cJSON_AddItemToObject(resp, "exam", detail) == 0) {
         cJSON_Delete(resp);
@@ -1070,14 +1090,18 @@ static enum MHD_Result respond_exam_detail(struct MHD_Connection *conn,
     return ret;
 }
 
-/* 返回试卷创建者 user_id；不存在返回 -1。 */
-static int exam_owner(sqlite3 *db, int exam_id) {
-    cJSON *detail = NULL;
-    if (exams_get(db, exam_id, &detail) != EXAMS_OK) return -1;
-    cJSON *teacher = cJSON_GetObjectItem(detail, "teacher_id");
-    int owner = cJSON_IsNumber(teacher) ? teacher->valueint : 0;
-    cJSON_Delete(detail);
-    return owner;
+/* 鉴权用：读取试卷创建者（只读元数据，不内联题目）。
+ * 悬空引用不影响鉴权，所有者因此仍能删除需要修复的试卷（docs/exams.md §11）。
+ * 失败时已回复（404 / 500）并返回 0；成功返回 1 并写 *owner。 */
+static int exam_owner(struct MHD_Connection *conn, sqlite3 *db, int exam_id,
+                      int *owner) {
+    if (owner != NULL) *owner = 0;
+    ExamsError err = exams_meta_get(db, exam_id, owner, NULL, 0);
+    if (err == EXAMS_OK) return 1;
+
+    reply_exam_error(conn, exams_http_status(err), exams_code_of(err),
+                     err == EXAMS_NOT_FOUND ? "exam not found" : "读取试卷失败");
+    return 0;
 }
 
 /* 处理 /api/v1/exams/{id}（无 /questions 后缀）。 */
@@ -1086,22 +1110,22 @@ static enum MHD_Result handle_exam_item(struct MHD_Connection *conn, int exam_id
                                         size_t body_len, const AppConfig *cfg,
                                         const Session *s) {
     if (strcmp(method, "GET") == 0) {
-        cJSON *detail = NULL;
-        if (exams_get(cfg->db, exam_id, &detail) != EXAMS_OK) {
-            return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
-                                    "exam not found");
+        /* 存在性与可见性只看元数据：悬空引用不影响可见性判定，
+         * 也不会让不可见角色（如 student 读 archived 卷）看到 500（§4.2）。 */
+        int owner = 0;
+        char exam_status[16];
+        ExamsError merr = exams_meta_get(cfg->db, exam_id, &owner, exam_status,
+                                         sizeof(exam_status));
+        if (merr != EXAMS_OK) {
+            return reply_exam_error(conn, exams_http_status(merr), exams_code_of(merr),
+                                    merr == EXAMS_NOT_FOUND ? "exam not found"
+                                                            : "读取试卷失败");
         }
         int visible = (strcmp(s->role, "admin") == 0);
-        if (!visible) {
-            cJSON *teacher = cJSON_GetObjectItem(detail, "teacher_id");
-            cJSON *status = cJSON_GetObjectItem(detail, "status");
-            if (strcmp(s->role, "teacher") == 0) {
-                visible = cJSON_IsNumber(teacher) && teacher->valueint == s->user_id;
-            } else if (strcmp(s->role, "student") == 0) {
-                visible = cJSON_IsString(status) && strcmp(status->valuestring, "active") == 0;
-            }
-        }
-        cJSON_Delete(detail);
+        if (!visible && strcmp(s->role, "teacher") == 0)
+            visible = (owner == s->user_id);
+        if (!visible && strcmp(s->role, "student") == 0)
+            visible = (strcmp(exam_status, "active") == 0);
         if (!visible)
             return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
                                     "exam not found");
@@ -1115,10 +1139,8 @@ static enum MHD_Result handle_exam_item(struct MHD_Connection *conn, int exam_id
     }
 
     if (strcmp(method, "DELETE") == 0) {
-        int owner = exam_owner(cfg->db, exam_id);
-        if (owner < 0)
-            return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
-                                    "exam not found");
+        int owner = 0;
+        if (!exam_owner(conn, cfg->db, exam_id, &owner)) return MHD_YES;
         if (strcmp(s->role, "teacher") == 0 && owner != s->user_id)
             return reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXAM_FORBIDDEN",
                                     "不能操作他人的试卷");
@@ -1130,10 +1152,8 @@ static enum MHD_Result handle_exam_item(struct MHD_Connection *conn, int exam_id
     }
 
     if (strcmp(method, "PUT") == 0) {
-        int owner = exam_owner(cfg->db, exam_id);
-        if (owner < 0)
-            return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
-                                    "exam not found");
+        int owner = 0;
+        if (!exam_owner(conn, cfg->db, exam_id, &owner)) return MHD_YES;
         if (strcmp(s->role, "teacher") == 0 && owner != s->user_id)
             return reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXAM_FORBIDDEN",
                                     "不能操作他人的试卷");
@@ -1153,6 +1173,10 @@ static enum MHD_Result handle_exam_item(struct MHD_Connection *conn, int exam_id
             return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST, "EXAM_INVALID_REQUEST",
                                     "name/description 字段类型不正确");
         }
+        if (!exam_readable_or_reply(conn, cfg->db, exam_id)) {
+            cJSON_Delete(root);
+            return MHD_YES;
+        }
         ExamsError err = exams_update_meta(cfg->db, exam_id,
                                            name ? name->valuestring : NULL,
                                            desc ? desc->valuestring : NULL);
@@ -1164,10 +1188,8 @@ static enum MHD_Result handle_exam_item(struct MHD_Connection *conn, int exam_id
     }
 
     if (strcmp(method, "PATCH") == 0) {
-        int owner = exam_owner(cfg->db, exam_id);
-        if (owner < 0)
-            return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
-                                    "exam not found");
+        int owner = 0;
+        if (!exam_owner(conn, cfg->db, exam_id, &owner)) return MHD_YES;
         if (strcmp(s->role, "teacher") == 0 && owner != s->user_id)
             return reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXAM_FORBIDDEN",
                                     "不能操作他人的试卷");
@@ -1180,6 +1202,10 @@ static enum MHD_Result handle_exam_item(struct MHD_Connection *conn, int exam_id
             return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST, "EXAM_INVALID_REQUEST",
                                     "status 字段类型不正确");
         }
+        if (!exam_readable_or_reply(conn, cfg->db, exam_id)) {
+            cJSON_Delete(root);
+            return MHD_YES;
+        }
         ExamsError err = exams_set_status(cfg->db, exam_id, status->valuestring);
         cJSON_Delete(root);
         if (err != EXAMS_OK)
@@ -1191,17 +1217,18 @@ static enum MHD_Result handle_exam_item(struct MHD_Connection *conn, int exam_id
     return reply_exam_not_allowed(conn, "GET, PUT, PATCH, DELETE");
 }
 
-/* 从 text 开头解析正十进制 id，到 '\0' 或 '/' 为止；成功返回 0 并写 *out。 */
+/* 解析完整的正十进制 id（必须到 '\0' 为止）；成功返回 0 并写 *out。
+ * 尾随 '/' 或额外路径段一律视为非法，由调用方映射为 404（docs/exams.md §4.2）。 */
 static int parse_leading_id(const char *text, long long *out) {
     if (text == NULL || *text == '\0') return -1;
-    for (const char *p = text; *p != '\0' && *p != '/'; p++) {
+    for (const char *p = text; *p != '\0'; p++) {
         if (*p < '0' || *p > '9') return -1;
     }
     errno = 0;
     char *end = NULL;
     long long id = strtoll(text, &end, 10);
     if (errno == ERANGE || end == text || id <= 0) return -1;
-    if (*end != '\0' && *end != '/') return -1;
+    if (*end != '\0') return -1;
     *out = id;
     return 0;
 }
@@ -1214,16 +1241,15 @@ static int exam_writable(struct MHD_Connection *conn, const AppConfig *cfg,
                          "仅教师或管理员可操作试卷");
         return 0;
     }
-    int owner = exam_owner(cfg->db, exam_id);
-    if (owner < 0) {
-        reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND", "exam not found");
-        return 0;
-    }
+    int owner = 0;
+    if (!exam_owner(conn, cfg->db, exam_id, &owner)) return 0;
     if (strcmp(s->role, "teacher") == 0 && owner != s->user_id) {
         reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXAM_FORBIDDEN",
                          "不能操作他人的试卷");
         return 0;
     }
+    /* 编排类写操作都要能回读整卷：读不回来即拒绝写入，避免「已写入但 500」（§5）。 */
+    if (!exam_readable_or_reply(conn, cfg->db, exam_id)) return 0;
     return 1;
 }
 
@@ -1321,7 +1347,15 @@ static enum MHD_Result handle_exams(struct MHD_Connection *conn, const char *url
                 int id = 0;
                 if (kv_str_to_int(ids[i], &id) != 0 || id <= 0) { ok = 0; break; }
                 cJSON *detail = NULL;
-                if (exams_get(cfg->db, id, &detail) != EXAMS_OK) { ok = 0; break; }
+                ExamsError derr = exams_get(cfg->db, id, &detail);
+                if (derr != EXAMS_OK) {
+                    /* 单卷存储异常（如悬空引用）只隔离该卷：不返回半截详情，
+                     * 也不让整张列表 500（docs/exams.md §4.1、§11）。 */
+                    fprintf(stderr,
+                            "[exams] list_skip_broken_exam (exam_id=%d, reason=%s)\n",
+                            id, exams_error_name(derr));
+                    continue;
+                }
                 cJSON *item = cJSON_Duplicate(detail, 1);
                 cJSON_Delete(detail);
                 if (item == NULL) { ok = 0; break; }

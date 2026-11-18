@@ -283,26 +283,35 @@ int exams_create(sqlite3 *db, const char *name, const char *description,
     if (!valid_name(name)) return EXAMS_INVALID_REQUEST;
     if (!valid_description(description)) return EXAMS_INVALID_REQUEST;
 
+    /* 取号与写入放在同一事务内：并发下不会重复分配 id，
+     * 任一字段写失败也不会留下半套元数据（docs/exams.md §11）。 */
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK)
+        return EXAMS_STORE_FAILED;
+
     int id = 0;
     int rc = next_exam_id(db, &id);
-    if (rc != EXAMS_OK) return rc;
+    int ok = (rc == EXAMS_OK);
 
     char key[32];
     char tid[32];
     char now[32];
-    key_buf(id, key, sizeof(key));
-    snprintf(tid, sizeof(tid), "%d", teacher_id);
-    snprintf(now, sizeof(now), "%lld", (long long)time(NULL));
-
     const char *desc = description != NULL ? description : "";
-    if (kv_set(db, EXAMS_NS, key, "name", name) != 0 ||
-        kv_set(db, EXAMS_NS, key, "description", desc) != 0 ||
-        kv_set(db, EXAMS_NS, key, "teacher_id", tid) != 0 ||
-        kv_set(db, EXAMS_NS, key, "status", "active") != 0 ||
-        kv_set(db, EXAMS_NS, key, "created_at", now) != 0 ||
-        kv_set(db, EXAMS_NS, key, "updated_at", now) != 0 ||
-        kv_set(db, EXAMS_NS, key, "questions", "[]") != 0) {
-        return EXAMS_STORE_FAILED;
+    if (ok) {
+        key_buf(id, key, sizeof(key));
+        snprintf(tid, sizeof(tid), "%d", teacher_id);
+        snprintf(now, sizeof(now), "%lld", (long long)time(NULL));
+        ok = kv_set(db, EXAMS_NS, key, "name", name) == 0 &&
+             kv_set(db, EXAMS_NS, key, "description", desc) == 0 &&
+             kv_set(db, EXAMS_NS, key, "teacher_id", tid) == 0 &&
+             kv_set(db, EXAMS_NS, key, "status", "active") == 0 &&
+             kv_set(db, EXAMS_NS, key, "created_at", now) == 0 &&
+             kv_set(db, EXAMS_NS, key, "updated_at", now) == 0 &&
+             kv_set(db, EXAMS_NS, key, "questions", "[]") == 0;
+    }
+
+    if (!ok || sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        return rc == EXAMS_OK ? EXAMS_STORE_FAILED : rc;
     }
     *out_id = id;
     return EXAMS_OK;
@@ -380,6 +389,21 @@ int exams_get(sqlite3 *db, int id, cJSON **out) {
     }
     *out = exam;
     return EXAMS_OK;
+}
+
+int exams_meta_get(sqlite3 *db, int id, int *out_teacher_id, char *status,
+                   size_t status_sz) {
+    if (out_teacher_id != NULL) *out_teacher_id = 0;
+    if (db == NULL || id <= 0) return EXAMS_INVALID_REQUEST;
+
+    char local[16];
+    char *buf = local;
+    size_t size = sizeof(local);
+    if (status != NULL && status_sz > 0) {
+        buf = status;
+        size = status_sz;
+    }
+    return exam_meta(db, id, buf, size, out_teacher_id);
 }
 
 int exams_update_meta(sqlite3 *db, int id, const char *name,
@@ -696,6 +720,9 @@ int exams_purge_question(sqlite3 *db, int question_id) {
             key_buf(id, key, sizeof(key));
             if (kv_set(db, EXAMS_NS, key, "questions", json) != 0) {
                 cJSON_free(json);
+                fprintf(stderr,
+                        "[exams] purge_write_failed (exam_id=%d, question_id=%d)\n",
+                        id, question_id);
                 kv_free_str_array(keys);
                 return EXAMS_STORE_FAILED;
             }
