@@ -1,7 +1,8 @@
 # 第一阶段题目模块（李俊熠 / 题目 CRUD）
 
 实现范围来自《第一阶段开发计划与 AI 协作指南》第一部分 1.2：固定题 seed、列表、详情和回归；
-后由题目增删改（CRUD）PR 扩展出新增、修改、删除三个写接口。
+后由题目增删改（CRUD）PR 扩展出新增、修改、删除三个写接口，
+再由学生投稿审核 PR 扩展出学生新增待审与教师审核（approve/reject）。
 
 ## 数据初始化
 
@@ -22,14 +23,23 @@
 所有题目接口均需登录取得 token，然后携带 `Authorization: Bearer <token>`。
 未登录、无效或已登出 token 返回 401。
 
-读接口（GET 列表/详情）：管理员、教师、学生及现有有效会话使用相同的只读接口。
-写接口（POST 新增 / PUT 修改 / DELETE 删除）：仅 `teacher` 与 `admin` 角色可调用，
-`student` 返回 403（权限检查先于题目存在性校验）。
+读接口（GET 列表/详情）：管理员、教师、学生及现有有效会话使用相同的只读接口；
+非 active 题目的详情另按提交人/教师收口（见「GET /api/v1/questions/{id}」）。
+写接口：
+- `POST 新增`：任意已登录角色；`student` 提交的题目进入待审核（`pending`），不直接生效。
+- `PUT 修改` / `DELETE 删除` / `POST 审核（/api/v1/questions/{id}/review）`：仅 `teacher` 与 `admin`，
+  `student` 返回 403（权限检查先于题目存在性校验）。
+
+题目状态：`pending`（待审核）、`active`（生效）、`rejected`（审核不通过）。
+学生提交的题目记录 `submitted_by`（提交人），审核后记录 `reviewed_by`（审核人）；
+两者与 `teacher_id` 一样为内部字段，不出现在题目 JSON 中。
 
 ### GET /api/v1/questions
 
-200 响应为 `{"questions":[题目对象,...]}`，按 id 升序返回全部 active 题目。
-本阶段无检索与分页，查询参数不会过滤列表；空列表返回 `{"questions":[]}`。
+200 响应为 `{"questions":[题目对象,...]}`，按 id 升序返回题目；空列表返回 `{"questions":[]}`。
+默认仅返回 `status=active` 的题目。可选查询参数 `?status=active|pending|rejected`；
+`pending`/`rejected` 仅 `teacher`/`admin` 可查（`student` 返回 403），非法值返回 400。
+本阶段无检索与分页。
 
 ### GET /api/v1/questions/{id}
 
@@ -59,7 +69,10 @@
 简答题 answer 是文本且 options 为 `[]`；知识点始终为字符串数组。
 旧表迁移的记录缺少选项/知识点时以空数组返回，不捏造内容。
 
-### POST /api/v1/questions（teacher/admin，新增）
+详情可见性：`active` 题目对所有已登录角色可见；`pending`/`rejected` 题目仅 `teacher`/`admin`
+或提交人本人（`submitted_by` 匹配当前用户）可见，否则返回 404（不泄露存在性）。
+
+### POST /api/v1/questions（新增，任意登录角色）
 
 请求体为题目字段（不含 id/status，服务端分配）：
 
@@ -85,7 +98,8 @@
 （knowledge_points 须为字符串数组）。
 
 成功：`201` + `{"question":{题目对象}}`（与 GET 详情同构）。
-失败：`400` 请求体缺失/JSON 非法/字段校验失败；`401` 未登录；`403` 学生越权；`500` 存储失败。
+`student` 提交的题目 `status=pending`（待审核），`teacher`/`admin` 提交的题目 `status=active`。
+失败：`400` 请求体缺失/JSON 非法/字段校验失败；`401` 未登录；`500` 存储失败。
 
 ### PUT /api/v1/questions/{id}（teacher/admin，修改）
 
@@ -101,16 +115,34 @@
 成功：`200` + `{"status":"ok"}`（删除后该 id 的 GET 返回 404）。
 失败：`404` 题目不存在/id 非法；`401` 未登录；`403` 学生越权。
 
+### POST /api/v1/questions/{id}/review（teacher/admin，审核）
+
+请求体：`{"action":"approve"}`（通过）或 `{"action":"reject"}`（不通过）。
+仅可审核 `status=pending` 的题目。
+
+- `approve`：题目转为 `status=active`，`teacher_id` 设为审核人，`reviewed_by` 记录审核人；
+  之后与教师提交的题目流程一致（可被列表/详情/对话使用）。
+- `reject`：题目转为 `status=rejected`，`reviewed_by` 记录审核人。
+
+成功：`200` + `{"question":{题目对象}}`。
+失败：`400` 请求体缺失/JSON 非法/action 缺失或非法；`401` 未登录；`403` 学生越权；
+`404` 题目不存在/id 非法；`409` 题目不在待审核状态；`500` 存储失败。
+
+- `rejected` 为终态：学生无法修改、删除或重新提交自己的被拒稿；如需再次投稿需重新 `POST`。
+- `approve` 后题目归属（`teacher_id`）为审核教师，后续 AI 对话按该教师的配置与额度解析；
+  若该教师未配置 API 凭据，学生对该题的 AI 对话会返回「教师API不可用」。
+
 | 状态码 | 响应 | 场景 |
 | --- | --- | --- |
-| 200 | 见各接口 | GET 列表/详情、PUT、DELETE 成功 |
+| 200 | 见各接口 | GET 列表/详情、PUT、DELETE、审核成功 |
 | 201 | `{"question":{...}}` | POST 创建成功 |
-| 400 | `{"error":"..."}` | 请求体缺失/JSON 非法/字段校验失败（写接口） |
+| 400 | `{"error":"..."}` | 请求体缺失/JSON 非法/字段校验失败/action 非法/status 参数非法 |
 | 401 | `{"error":"未登录或 token 已过期"}` | 无有效会话，优先于题目参数校验 |
-| 403 | `{"error":"仅教师或管理员可执行此操作"}` | 非 teacher/admin 调用写接口 |
-| 404 | `{"error":"question not found"}` | 不存在/非 active 题目，或不是正整数的 id、溢出、额外路径段 |
+| 403 | `{"error":"仅教师或管理员可执行此操作"}` | 非 teacher/admin 调用 PUT/DELETE/审核，或查询非 active 列表 |
+| 404 | `{"error":"question not found"}` | 不存在题目、无权读取的非 active 题目，或不是正整数的 id、溢出、额外路径段 |
 | 405 | `{"error":"method not allowed"}` | 登录后对题目接口使用 GET/POST/PUT/DELETE 之外的方法；响应含 `Allow: GET, POST, PUT, DELETE` |
-| 500 | `{"error":"query/create/update/delete question failed"}` | 数据库不可读、查询/JSON 处理失败 |
+| 409 | `{"error":"题目不在待审核状态"}` | 对非 pending 题目执行审核 |
+| 500 | `{"error":"query/create/update/delete/review question failed"}` | 数据库不可读、查询/JSON 处理失败 |
 
 id 必须是正的十进制整数。客户端先登录，再 GET 列表，点击后用该条 id GET 详情；
 将 id 传给对话接口的实现者。客户端收到 401 应提示重新登录。
@@ -150,6 +182,11 @@ HTTP 回归使用 Python 3 标准库（Ubuntu 与 ubuntu-latest 已提供），�
 | questions/case_3.sh | 缺失/无效/登出 token 的 401，非 GET 的 405，路径前缀不误匹配 |
 | questions/case_4.sh | 数据库缺失返回 500，不创建空库，恢复后正常 |
 | questions/case_5.sh | 旧库迁移保留数据，重复 seed 不重复且不覆盖修改，空列表和归档 |
+| questions/case_6.sh | 创建 single_choice/short_answer 成功；非法负载 400；自清理 |
+| questions/case_7.sh | 部分更新保留未传字段；跨字段一致性校验 |
+| questions/case_8.sh | 删除后不可读、重复删除/非法 id 404 |
+| questions/case_9.sh | student 新增进待审、不能改删/审核；teacher 直接生效 |
+| questions/case_10.sh | 学生提交进待审队列；教师审核通过/拒绝；列表/详情状态过滤、越权收口与清理 |
 
 ## 联调交接与剩余人工验收
 
