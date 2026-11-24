@@ -341,6 +341,14 @@ elif mode == "questions":
                                   admin_token, method="DELETE")
         assert status == 404 and body["code"] == "EXAM_NOT_FOUND"
 
+        # 9b. qid 后跟额外路径段 → 404，且不得命中移除逻辑（docs/exams.md §4.2）
+        status, body, _ = request("/api/v1/exams/" + str(eid) + "/questions/3/extra",
+                                  admin_token, method="DELETE")
+        assert status == 404 and body["code"] == "EXAM_NOT_FOUND"
+        status, body, _ = request("/api/v1/exams/" + str(eid), admin_token)
+        assert status == 200, status
+        assert [q["question_id"] for q in body["exam"]["questions"]] == [2, 3]
+
         # 10. archived → 409（PUT/POST/DELETE questions 均封锁）
         assert request("/api/v1/exams/" + str(eid), admin_token, method="PATCH",
                        data={"status": "archived"})[0] == 200
@@ -562,6 +570,99 @@ elif mode == "student":
         for e in exams_created:
             request("/api/v1/exams/" + str(e), admin_token, method="DELETE")
     print("PASS: student 列表过滤、archived 404、字段含 answer/analysis、position 升序、空卷 200、写 403")
+
+elif mode == "dangling":
+    # 模拟题目删除联动清理失败 / 手工改库后的悬空引用：
+    # 详情 500 与 404 严格区分、列表只隔离坏卷、所有者仍可删除修复（docs/exams.md §4.1、§4.2、§11）。
+    import sqlite3
+
+    admin = login("admin"); admin_token = admin["token"]
+    teacher = login("teacher"); teacher_token = teacher["token"]
+
+    db_path = os.getenv("DATABASE_PATH")
+    assert db_path, "dangling 用例需要 DATABASE_PATH（请通过 tests/run_tests.sh 执行）"
+
+    exams_created = []
+    question_created = []
+    try:
+        # 准备一道新题，避免影响其他用例共用的 seed 题。
+        status, body, _ = request("/api/v1/questions", admin_token, method="POST",
+                                  data={"content": "悬空引用测试题", "type": "short_answer",
+                                        "options": [], "answer": "答案",
+                                        "knowledge_points": ["测试"]})
+        assert status == 201
+        qid = body["question"]["id"]; question_created.append(qid)
+
+        # 健康对照卷：证明列表隔离坏卷时其他卷不受影响。
+        status, body, _ = request("/api/v1/exams", admin_token, method="POST",
+                                  data={"name": "对照卷", "description": ""})
+        assert status == 201
+        ok_id = body["exam"]["id"]; exams_created.append(ok_id)
+        status, body, _ = request("/api/v1/exams/" + str(ok_id) + "/questions",
+                                  admin_token, method="PUT",
+                                  data={"questions": [{"question_id": 1,
+                                                       "position": 1, "score": 5}]})
+        assert status == 200
+
+        # 坏卷：引用新题 + seed 题。
+        status, body, _ = request("/api/v1/exams", admin_token, method="POST",
+                                  data={"name": "坏卷", "description": ""})
+        assert status == 201
+        bad_id = body["exam"]["id"]; exams_created.append(bad_id)
+        status, body, _ = request("/api/v1/exams/" + str(bad_id) + "/questions",
+                                  admin_token, method="PUT",
+                                  data={"questions": [
+                                      {"question_id": qid, "position": 1, "score": 5},
+                                      {"question_id": 1, "position": 2, "score": 5},
+                                  ]})
+        assert status == 200
+        assert [q["question_id"] for q in body["exam"]["questions"]] == [qid, 1]
+
+        # 只删 qdata，保留试卷里的引用：等价于 purge 中途失败/手工改库。
+        conn = sqlite3.connect(db_path, timeout=5)
+        try:
+            conn.execute("DELETE FROM qdata WHERE key_name=?", (str(qid),))
+            conn.commit()
+        finally:
+            conn.close()
+
+        # 1. 详情：存储异常 → 500 EXAM_STORE_FAILED，不能伪装成 404。
+        status, body, _ = request("/api/v1/exams/" + str(bad_id), admin_token)
+        assert status == 500 and body["code"] == "EXAM_STORE_FAILED", (status, body)
+
+        # 2. 不可见角色仍按元数据判定 → 404，不因坏卷暴露存在性。
+        status, body, _ = request("/api/v1/exams/" + str(bad_id), teacher_token)
+        assert status == 404 and body["code"] == "EXAM_NOT_FOUND", (status, body)
+
+        # 3. 列表：隔离坏卷，健康卷照常返回，整体仍是 200。
+        status, body, _ = request("/api/v1/exams", admin_token)
+        assert status == 200
+        ids = {e["id"] for e in body["exams"]}
+        assert bad_id not in ids and ok_id in ids, ids
+
+        # 4. 写路径先回读整卷：读不回来即 500，不产生半成功写入。
+        status, body, _ = request("/api/v1/exams/" + str(bad_id), admin_token,
+                                  method="PUT", data={"name": "不该写入"})
+        assert status == 500 and body["code"] == "EXAM_STORE_FAILED"
+        status, body, _ = request("/api/v1/exams/" + str(bad_id) + "/questions",
+                                  admin_token, method="PUT",
+                                  data={"questions": [{"question_id": 1,
+                                                       "position": 1, "score": 5}]})
+        assert status == 500 and body["code"] == "EXAM_STORE_FAILED"
+
+        # 5. 鉴权只读元数据：所有者仍可删除该卷完成修复。
+        status, body, _ = request("/api/v1/exams/" + str(bad_id), admin_token,
+                                  method="DELETE")
+        assert status == 200 and body == {"status": "ok"}
+        exams_created.remove(bad_id)
+        status, body, _ = request("/api/v1/exams/" + str(bad_id), admin_token)
+        assert status == 404 and body["code"] == "EXAM_NOT_FOUND"
+    finally:
+        for e in exams_created:
+            request("/api/v1/exams/" + str(e), admin_token, method="DELETE")
+        for q in question_created:
+            request("/api/v1/questions/" + str(q), admin_token, method="DELETE")
+    print("PASS: 悬空引用详情 500、不可见 404、列表隔离、写路径 500、所有者可删除修复")
 
 else:
     raise ValueError(mode)

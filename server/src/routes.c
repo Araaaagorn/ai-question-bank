@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +25,7 @@
 #include "db.h"
 #include "kv_store.h"
 #include "exams.h"
+#include "export.h"
 #include "routes.h"
 
 /* ── 密码哈希（与 db.c 保持一致的算法和 salt） ── */
@@ -1340,15 +1342,35 @@ static cJSON *exams_parse_body(struct MHD_Connection *conn, const char *body,
     return root;
 }
 
+/* 读取整卷详情；失败时按错误码回复（不存在 → 404，存储异常 → 500）并返回 NULL。
+ * 悬空引用等存储异常必须与「不存在 / 不可见」区分（docs/exams.md §4.2、§8）。 */
+static cJSON *exam_detail_or_reply(struct MHD_Connection *conn, sqlite3 *db,
+                                   int exam_id) {
+    cJSON *detail = NULL;
+    ExamsError err = exams_get(db, exam_id, &detail);
+    if (err == EXAMS_OK) return detail;
+
+    reply_exam_error(conn, exams_http_status(err), exams_code_of(err),
+                     err == EXAMS_NOT_FOUND ? "exam not found" : "读取试卷失败");
+    return NULL;
+}
+
+/* 写操作前置校验：整卷必须能读回，否则拒绝写入，
+ * 避免「已写入但响应 500」的半成功（docs/exams.md §5）。 */
+static int exam_readable_or_reply(struct MHD_Connection *conn, sqlite3 *db,
+                                  int exam_id) {
+    cJSON *detail = exam_detail_or_reply(conn, db, exam_id);
+    if (detail == NULL) return 0;
+    cJSON_Delete(detail);
+    return 1;
+}
+
 /* 读取并返回 {"exam":{...}}。 */
 static enum MHD_Result respond_exam_detail(struct MHD_Connection *conn,
                                            int exam_id, const AppConfig *cfg,
                                            unsigned int status) {
-    cJSON *detail = NULL;
-    if (exams_get(cfg->db, exam_id, &detail) != EXAMS_OK) {
-        return reply_exam_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
-                                "EXAM_STORE_FAILED", "读取试卷失败");
-    }
+    cJSON *detail = exam_detail_or_reply(conn, cfg->db, exam_id);
+    if (detail == NULL) return MHD_YES;
     cJSON *resp = cJSON_CreateObject();
     if (resp == NULL || cJSON_AddItemToObject(resp, "exam", detail) == 0) {
         cJSON_Delete(resp);
@@ -1363,14 +1385,18 @@ static enum MHD_Result respond_exam_detail(struct MHD_Connection *conn,
     return ret;
 }
 
-/* 返回试卷创建者 user_id；不存在返回 -1。 */
-static int exam_owner(sqlite3 *db, int exam_id) {
-    cJSON *detail = NULL;
-    if (exams_get(db, exam_id, &detail) != EXAMS_OK) return -1;
-    cJSON *teacher = cJSON_GetObjectItem(detail, "teacher_id");
-    int owner = cJSON_IsNumber(teacher) ? teacher->valueint : 0;
-    cJSON_Delete(detail);
-    return owner;
+/* 鉴权用：读取试卷创建者（只读元数据，不内联题目）。
+ * 悬空引用不影响鉴权，所有者因此仍能删除需要修复的试卷（docs/exams.md §11）。
+ * 失败时已回复（404 / 500）并返回 0；成功返回 1 并写 *owner。 */
+static int exam_owner(struct MHD_Connection *conn, sqlite3 *db, int exam_id,
+                      int *owner) {
+    if (owner != NULL) *owner = 0;
+    ExamsError err = exams_meta_get(db, exam_id, owner, NULL, 0);
+    if (err == EXAMS_OK) return 1;
+
+    reply_exam_error(conn, exams_http_status(err), exams_code_of(err),
+                     err == EXAMS_NOT_FOUND ? "exam not found" : "读取试卷失败");
+    return 0;
 }
 
 /* 处理 /api/v1/exams/{id}（无 /questions 后缀）。 */
@@ -1379,22 +1405,22 @@ static enum MHD_Result handle_exam_item(struct MHD_Connection *conn, int exam_id
                                         size_t body_len, const AppConfig *cfg,
                                         const Session *s) {
     if (strcmp(method, "GET") == 0) {
-        cJSON *detail = NULL;
-        if (exams_get(cfg->db, exam_id, &detail) != EXAMS_OK) {
-            return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
-                                    "exam not found");
+        /* 存在性与可见性只看元数据：悬空引用不影响可见性判定，
+         * 也不会让不可见角色（如 student 读 archived 卷）看到 500（§4.2）。 */
+        int owner = 0;
+        char exam_status[16];
+        ExamsError merr = exams_meta_get(cfg->db, exam_id, &owner, exam_status,
+                                         sizeof(exam_status));
+        if (merr != EXAMS_OK) {
+            return reply_exam_error(conn, exams_http_status(merr), exams_code_of(merr),
+                                    merr == EXAMS_NOT_FOUND ? "exam not found"
+                                                            : "读取试卷失败");
         }
         int visible = (strcmp(s->role, "admin") == 0);
-        if (!visible) {
-            cJSON *teacher = cJSON_GetObjectItem(detail, "teacher_id");
-            cJSON *status = cJSON_GetObjectItem(detail, "status");
-            if (strcmp(s->role, "teacher") == 0) {
-                visible = cJSON_IsNumber(teacher) && teacher->valueint == s->user_id;
-            } else if (strcmp(s->role, "student") == 0) {
-                visible = cJSON_IsString(status) && strcmp(status->valuestring, "active") == 0;
-            }
-        }
-        cJSON_Delete(detail);
+        if (!visible && strcmp(s->role, "teacher") == 0)
+            visible = (owner == s->user_id);
+        if (!visible && strcmp(s->role, "student") == 0)
+            visible = (strcmp(exam_status, "active") == 0);
         if (!visible)
             return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
                                     "exam not found");
@@ -1408,10 +1434,8 @@ static enum MHD_Result handle_exam_item(struct MHD_Connection *conn, int exam_id
     }
 
     if (strcmp(method, "DELETE") == 0) {
-        int owner = exam_owner(cfg->db, exam_id);
-        if (owner < 0)
-            return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
-                                    "exam not found");
+        int owner = 0;
+        if (!exam_owner(conn, cfg->db, exam_id, &owner)) return MHD_YES;
         if (strcmp(s->role, "teacher") == 0 && owner != s->user_id)
             return reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXAM_FORBIDDEN",
                                     "不能操作他人的试卷");
@@ -1423,10 +1447,8 @@ static enum MHD_Result handle_exam_item(struct MHD_Connection *conn, int exam_id
     }
 
     if (strcmp(method, "PUT") == 0) {
-        int owner = exam_owner(cfg->db, exam_id);
-        if (owner < 0)
-            return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
-                                    "exam not found");
+        int owner = 0;
+        if (!exam_owner(conn, cfg->db, exam_id, &owner)) return MHD_YES;
         if (strcmp(s->role, "teacher") == 0 && owner != s->user_id)
             return reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXAM_FORBIDDEN",
                                     "不能操作他人的试卷");
@@ -1446,6 +1468,10 @@ static enum MHD_Result handle_exam_item(struct MHD_Connection *conn, int exam_id
             return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST, "EXAM_INVALID_REQUEST",
                                     "name/description 字段类型不正确");
         }
+        if (!exam_readable_or_reply(conn, cfg->db, exam_id)) {
+            cJSON_Delete(root);
+            return MHD_YES;
+        }
         ExamsError err = exams_update_meta(cfg->db, exam_id,
                                            name ? name->valuestring : NULL,
                                            desc ? desc->valuestring : NULL);
@@ -1457,10 +1483,8 @@ static enum MHD_Result handle_exam_item(struct MHD_Connection *conn, int exam_id
     }
 
     if (strcmp(method, "PATCH") == 0) {
-        int owner = exam_owner(cfg->db, exam_id);
-        if (owner < 0)
-            return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND",
-                                    "exam not found");
+        int owner = 0;
+        if (!exam_owner(conn, cfg->db, exam_id, &owner)) return MHD_YES;
         if (strcmp(s->role, "teacher") == 0 && owner != s->user_id)
             return reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXAM_FORBIDDEN",
                                     "不能操作他人的试卷");
@@ -1473,6 +1497,10 @@ static enum MHD_Result handle_exam_item(struct MHD_Connection *conn, int exam_id
             return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST, "EXAM_INVALID_REQUEST",
                                     "status 字段类型不正确");
         }
+        if (!exam_readable_or_reply(conn, cfg->db, exam_id)) {
+            cJSON_Delete(root);
+            return MHD_YES;
+        }
         ExamsError err = exams_set_status(cfg->db, exam_id, status->valuestring);
         cJSON_Delete(root);
         if (err != EXAMS_OK)
@@ -1484,17 +1512,18 @@ static enum MHD_Result handle_exam_item(struct MHD_Connection *conn, int exam_id
     return reply_exam_not_allowed(conn, "GET, PUT, PATCH, DELETE");
 }
 
-/* 从 text 开头解析正十进制 id，到 '\0' 或 '/' 为止；成功返回 0 并写 *out。 */
+/* 解析完整的正十进制 id（必须到 '\0' 为止）；成功返回 0 并写 *out。
+ * 尾随 '/' 或额外路径段一律视为非法，由调用方映射为 404（docs/exams.md §4.2）。 */
 static int parse_leading_id(const char *text, long long *out) {
     if (text == NULL || *text == '\0') return -1;
-    for (const char *p = text; *p != '\0' && *p != '/'; p++) {
+    for (const char *p = text; *p != '\0'; p++) {
         if (*p < '0' || *p > '9') return -1;
     }
     errno = 0;
     char *end = NULL;
     long long id = strtoll(text, &end, 10);
     if (errno == ERANGE || end == text || id <= 0) return -1;
-    if (*end != '\0' && *end != '/') return -1;
+    if (*end != '\0') return -1;
     *out = id;
     return 0;
 }
@@ -1507,16 +1536,15 @@ static int exam_writable(struct MHD_Connection *conn, const AppConfig *cfg,
                          "仅教师或管理员可操作试卷");
         return 0;
     }
-    int owner = exam_owner(cfg->db, exam_id);
-    if (owner < 0) {
-        reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXAM_NOT_FOUND", "exam not found");
-        return 0;
-    }
+    int owner = 0;
+    if (!exam_owner(conn, cfg->db, exam_id, &owner)) return 0;
     if (strcmp(s->role, "teacher") == 0 && owner != s->user_id) {
         reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXAM_FORBIDDEN",
                          "不能操作他人的试卷");
         return 0;
     }
+    /* 编排类写操作都要能回读整卷：读不回来即拒绝写入，避免「已写入但 500」（§5）。 */
+    if (!exam_readable_or_reply(conn, cfg->db, exam_id)) return 0;
     return 1;
 }
 
@@ -1587,6 +1615,426 @@ static enum MHD_Result handle_exam_question_item(struct MHD_Connection *conn,
     return reply_exam_not_allowed(conn, "DELETE");
 }
 
+/* ── 试卷导出（F09）：四格式文件 + 导出策略 ── */
+
+static int export_query_flag(struct MHD_Connection *conn, const char *name,
+                             int fallback, int *out) {
+    const char *value = MHD_lookup_connection_value(conn, MHD_GET_ARGUMENT_KIND, name);
+    if (value == NULL) {
+        *out = fallback;
+        return 0;
+    }
+    if (strcmp(value, "1") == 0 || strcasecmp(value, "true") == 0) {
+        *out = 1;
+        return 0;
+    }
+    if (strcmp(value, "0") == 0 || strcasecmp(value, "false") == 0) {
+        *out = 0;
+        return 0;
+    }
+    return -1;
+}
+
+static char *export_asprintf(const char *fmt, ...) {
+    va_list ap;
+    va_list copy;
+    va_start(ap, fmt);
+    va_copy(copy, ap);
+    int needed = vsnprintf(NULL, 0, fmt, ap);
+    va_end(ap);
+    if (needed < 0) {
+        va_end(copy);
+        return NULL;
+    }
+    char *text = malloc((size_t)needed + 1);
+    if (text != NULL) (void)vsnprintf(text, (size_t)needed + 1, fmt, copy);
+    va_end(copy);
+    return text;
+}
+
+/* 卷名清洗：丢弃控制字符与响应头危险字符，按 UTF-8 边界截断到 60 字节。 */
+static char *export_safe_name(const char *name) {
+    size_t len = (name != NULL) ? strlen(name) : 0;
+    char *out = malloc(len + 1);
+    if (out == NULL) return NULL;
+    size_t used = 0;
+    for (size_t i = 0; i < len && used < 60;) {
+        unsigned char ch = (unsigned char)name[i];
+        size_t step = 1;
+        if ((ch & 0xF8) == 0xF0) step = 4;
+        else if ((ch & 0xF0) == 0xE0) step = 3;
+        else if ((ch & 0xE0) == 0xC0) step = 2;
+        if (i + step > len) break;
+        if (ch < 0x20 || ch == 0x7F || ch == '"' || ch == '\\' || ch == '/' ||
+            ch == ';' || ch == '%') {
+            out[used++] = '_';
+            i += 1;
+            continue;
+        }
+        if (used + step > 60) break;
+        memcpy(out + used, name + i, step);
+        used += step;
+        i += step;
+    }
+    out[used] = '\0';
+    return out;
+}
+
+/* RFC 5987 percent-encoding（filename* 用）。 */
+static char *export_percent_encode(const char *text) {
+    static const char hex[] = "0123456789ABCDEF";
+    size_t len = strlen(text);
+    char *out = malloc(len * 3 + 1);
+    if (out == NULL) return NULL;
+    size_t used = 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char ch = (unsigned char)text[i];
+        int plain = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+                    (ch >= '0' && ch <= '9') || ch == '-' || ch == '.' ||
+                    ch == '_' || ch == '~';
+        if (plain) {
+            out[used++] = (char)ch;
+        } else {
+            out[used++] = '%';
+            out[used++] = hex[ch >> 4];
+            out[used++] = hex[ch & 0x0F];
+        }
+    }
+    out[used] = '\0';
+    return out;
+}
+
+static char *export_disposition(const cJSON *exam, int exam_id,
+                                const char *extension) {
+    const cJSON *name = cJSON_GetObjectItem(exam, "name");
+    const char *exam_name = (cJSON_IsString(name) && name->valuestring != NULL &&
+                             name->valuestring[0])
+                                ? name->valuestring
+                                : "";
+    char *safe = export_safe_name(exam_name);
+    if (safe == NULL) return NULL;
+    char *full = (safe[0] != '\0')
+                     ? export_asprintf("exam-%d-%s.%s", exam_id, safe, extension)
+                     : export_asprintf("exam-%d.%s", exam_id, extension);
+    free(safe);
+    if (full == NULL) return NULL;
+    char *encoded = export_percent_encode(full);
+    free(full);
+    if (encoded == NULL) return NULL;
+    char *disposition = export_asprintf(
+        "attachment; filename=\"exam-%d.%s\"; filename*=UTF-8''%s",
+        exam_id, extension, encoded);
+    free(encoded);
+    return disposition;
+}
+
+static enum MHD_Result reply_export_file(struct MHD_Connection *conn,
+                                         ExportBuffer *buffer,
+                                         const char *content_type,
+                                         const char *disposition) {
+    struct MHD_Response *resp = MHD_create_response_from_buffer(
+        buffer->len, buffer->data, MHD_RESPMEM_MUST_FREE);
+    if (resp == NULL) {
+        export_buffer_free(buffer);
+        return reply_exam_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                                "EXPORT_STORE_FAILED", "构造文件响应失败");
+    }
+    buffer->data = NULL;
+    buffer->len = 0;
+    MHD_add_response_header(resp, "Content-Type", content_type);
+    if (disposition != NULL) {
+        MHD_add_response_header(resp, "Content-Disposition", disposition);
+    }
+    MHD_add_response_header(resp, "Cache-Control", "no-store");
+    MHD_add_response_header(resp, "X-Content-Type-Options", "nosniff");
+    enum MHD_Result ret = MHD_queue_response(conn, MHD_HTTP_OK, resp);
+    MHD_destroy_response(resp);
+    return ret;
+}
+
+static enum MHD_Result respond_export_policy(struct MHD_Connection *conn,
+                                             const AppConfig *cfg, int exam_id) {
+    int allow_export = 1;
+    int allow_answers = 1;
+    if (export_policy_get(cfg->db, exam_id, &allow_export, &allow_answers) != EXPORT_OK) {
+        return reply_exam_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                                "EXPORT_STORE_FAILED", "读取导出策略失败");
+    }
+
+    static const char *formats[] = { "pdf", "markdown", "latex", "docx" };
+    cJSON *root = cJSON_CreateObject();
+    int ok = (root != NULL);
+    cJSON *policy = ok ? cJSON_AddObjectToObject(root, "export_policy") : NULL;
+    if (ok && policy == NULL) ok = 0;
+    if (ok) ok = cJSON_AddBoolToObject(policy, "allow_export",
+                                       allow_export ? 1 : 0) != NULL;
+    if (ok) ok = cJSON_AddBoolToObject(policy, "allow_answers",
+                                       allow_answers ? 1 : 0) != NULL;
+    cJSON *caps = ok ? cJSON_AddObjectToObject(root, "capabilities") : NULL;
+    if (ok && caps == NULL) ok = 0;
+    cJSON *list = ok ? cJSON_AddArrayToObject(caps, "formats") : NULL;
+    if (ok && list == NULL) ok = 0;
+    for (size_t i = 0; ok && i < sizeof formats / sizeof formats[0]; i++) {
+        if (cJSON_AddItemToArray(list, cJSON_CreateString(formats[i])) == 0) ok = 0;
+    }
+    if (ok) ok = cJSON_AddBoolToObject(caps, "ai_answer",
+                                       export_ai_available() ? 1 : 0) != NULL;
+
+    char *json = ok ? cJSON_PrintUnformatted(root) : NULL;
+    cJSON_Delete(root);
+    if (json == NULL) {
+        return reply_exam_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                                "EXPORT_STORE_FAILED", "读取导出策略失败");
+    }
+    enum MHD_Result ret = reply_json(conn, MHD_HTTP_OK, json);
+    cJSON_free(json);
+    return ret;
+}
+
+static enum MHD_Result handle_export_policy_put(struct MHD_Connection *conn,
+                                                int exam_id, const char *body,
+                                                size_t body_len,
+                                                const AppConfig *cfg) {
+    (void)body_len;
+    if (body == NULL || body[0] == '\0') {
+        return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST,
+                                "EXPORT_INVALID_REQUEST", "请求体为空");
+    }
+    cJSON *root = cJSON_ParseWithOpts(body, NULL, 1);
+    if (root == NULL || !cJSON_IsObject(root)) {
+        cJSON_Delete(root);
+        return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST,
+                                "EXPORT_INVALID_REQUEST", "JSON 解析失败");
+    }
+
+    static const char *allowed[] = { "allow_export", "allow_answers" };
+    int has_field = 0;
+    for (cJSON *item = root->child; item != NULL; item = item->next) {
+        int known = 0;
+        for (size_t i = 0; i < sizeof allowed / sizeof allowed[0]; i++) {
+            if (item->string != NULL && strcmp(item->string, allowed[i]) == 0) {
+                known = 1;
+                break;
+            }
+        }
+        if (!known || !cJSON_IsBool(item)) {
+            cJSON_Delete(root);
+            return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST,
+                                    "EXPORT_INVALID_REQUEST",
+                                    "allow_export/allow_answers 必须为布尔值");
+        }
+        has_field = 1;
+    }
+    if (!has_field) {
+        cJSON_Delete(root);
+        return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST,
+                                "EXPORT_INVALID_REQUEST",
+                                "请求体未包含任何可更新字段");
+    }
+
+    int allow_export = 1;
+    int allow_answers = 1;
+    if (export_policy_get(cfg->db, exam_id, &allow_export, &allow_answers) != EXPORT_OK) {
+        cJSON_Delete(root);
+        return reply_exam_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                                "EXPORT_STORE_FAILED", "读取导出策略失败");
+    }
+    cJSON *export_field = cJSON_GetObjectItem(root, "allow_export");
+    cJSON *answer_field = cJSON_GetObjectItem(root, "allow_answers");
+    if (export_field != NULL) allow_export = cJSON_IsTrue(export_field) ? 1 : 0;
+    if (answer_field != NULL) allow_answers = cJSON_IsTrue(answer_field) ? 1 : 0;
+    cJSON_Delete(root);
+
+    ExportError err = export_policy_set(cfg->db, exam_id, allow_export, allow_answers);
+    if (err != EXPORT_OK) {
+        unsigned int status =
+            (err == EXPORT_NOT_FOUND) ? MHD_HTTP_NOT_FOUND
+                                      : MHD_HTTP_INTERNAL_SERVER_ERROR;
+        return reply_exam_error(conn, status, export_error_code(err),
+                                "保存导出策略失败");
+    }
+    return respond_export_policy(conn, cfg, exam_id);
+}
+
+static enum MHD_Result handle_exam_export(struct MHD_Connection *conn,
+                                          int exam_id, const char *format,
+                                          const cJSON *exam, int privileged,
+                                          int allow_export, int allow_answers,
+                                          const AppConfig *cfg) {
+    if (!export_format_supported(format)) {
+        return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST,
+                                "EXPORT_UNSUPPORTED_FORMAT",
+                                "仅支持 pdf / markdown / latex / docx");
+    }
+    if (!privileged && !allow_export) {
+        return reply_exam_error(conn, MHD_HTTP_FORBIDDEN, "EXPORT_FORBIDDEN",
+                                "该试卷不允许导出");
+    }
+
+    ExportOptions options = { 1, 1, 1, 0 };
+    int requested_answers = 1;
+    int requested_analysis = 1;
+    int requested_ai = 0;
+    if (export_query_flag(conn, "options", 1, &options.include_options) != 0 ||
+        export_query_flag(conn, "answers", 1, &requested_answers) != 0 ||
+        export_query_flag(conn, "analysis", 1, &requested_analysis) != 0 ||
+        export_query_flag(conn, "ai", 0, &requested_ai) != 0) {
+        return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST,
+                                "EXPORT_INVALID_REQUEST",
+                                "options/answers/analysis/ai 只接受 0 或 1");
+    }
+    if (requested_ai && !export_ai_available()) {
+        return reply_exam_error(conn, MHD_HTTP_BAD_REQUEST,
+                                "EXPORT_OPTION_UNSUPPORTED",
+                                "AI 解答尚未接入，暂不支持 ai=1");
+    }
+
+    options.include_answers = requested_answers && (privileged || allow_answers);
+    options.include_analysis = requested_analysis && (privileged || allow_answers);
+    options.include_ai = requested_ai;
+
+    ExportBuffer buffer = { NULL, 0 };
+    ExportError err = export_render(cfg->db, exam, format, &options, &buffer);
+    if (err != EXPORT_OK) {
+        unsigned int status;
+        switch (err) {
+            case EXPORT_TOO_LARGE: status = 413; break;
+            case EXPORT_UNSUPPORTED_FORMAT:
+            case EXPORT_OPTION_UNSUPPORTED:
+            case EXPORT_INVALID_REQUEST: status = MHD_HTTP_BAD_REQUEST; break;
+            default: status = MHD_HTTP_INTERNAL_SERVER_ERROR; break;
+        }
+        return reply_exam_error(conn, status, export_error_code(err), "导出渲染失败");
+    }
+
+    const char *extension = export_format_extension(format);
+    const char *content_type = export_format_content_type(format);
+    char *disposition = export_disposition(exam, exam_id, extension);
+    if (disposition == NULL) {
+        export_buffer_free(&buffer);
+        return reply_exam_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                                "EXPORT_STORE_FAILED", "构造文件响应失败");
+    }
+    enum MHD_Result ret = reply_export_file(conn, &buffer, content_type, disposition);
+    free(disposition);
+    return ret;
+}
+
+/* /api/v1/exams/{id}/export/{format} 与 /api/v1/exams/{id}/export-policy。 */
+static enum MHD_Result handle_exports(struct MHD_Connection *conn, const char *url,
+                                      const char *method, const char *body,
+                                      size_t body_len, const AppConfig *cfg,
+                                      const Session *s) {
+    char path[256];
+    size_t path_len = 0;
+    while (url[path_len] != '\0' && url[path_len] != '?') path_len++;
+    if (path_len >= sizeof path) {
+        return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXPORT_NOT_FOUND",
+                                "exam not found");
+    }
+    memcpy(path, url, path_len);
+    path[path_len] = '\0';
+
+    const char prefix[] = "/api/v1/exams/";
+    const char *id_text = path + sizeof prefix - 1;
+    const char *rest = id_text;
+    while (*rest != '\0' && *rest != '/') {
+        if (*rest < '0' || *rest > '9') {
+            return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXPORT_NOT_FOUND",
+                                    "exam not found");
+        }
+        rest++;
+    }
+    if (rest == id_text || (*rest != '\0' && *rest != '/')) {
+        return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXPORT_NOT_FOUND",
+                                "exam not found");
+    }
+    errno = 0;
+    char *end = NULL;
+    long long parsed = strtoll(id_text, &end, 10);
+    if (errno == ERANGE || end != rest || parsed <= 0 || parsed > 2147483647LL) {
+        return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXPORT_NOT_FOUND",
+                                "exam not found");
+    }
+    int exam_id = (int)parsed;
+
+    int owner = 0;
+    char exam_status[16];
+    ExamsError meta_err = exams_meta_get(cfg->db, exam_id, &owner, exam_status,
+                                         sizeof(exam_status));
+    if (meta_err == EXAMS_NOT_FOUND || meta_err == EXAMS_INVALID_REQUEST) {
+        return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXPORT_NOT_FOUND",
+                                "exam not found");
+    }
+    if (meta_err != EXAMS_OK) {
+        return reply_exam_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                                "EXPORT_STORE_FAILED", "读取试卷失败");
+    }
+
+    int visible = (strcmp(s->role, "admin") == 0);
+    int privileged = (strcmp(s->role, "admin") == 0) ||
+                     (strcmp(s->role, "teacher") == 0 && owner == s->user_id);
+    if (!visible) {
+        if (strcmp(s->role, "teacher") == 0) {
+            visible = (owner == s->user_id);
+        } else if (strcmp(s->role, "student") == 0) {
+            visible = (strcmp(exam_status, "active") == 0);
+        }
+    }
+    if (!visible) {
+        return reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXPORT_NOT_FOUND",
+                                "exam not found");
+    }
+
+    int allow_export = 1;
+    int allow_answers = 1;
+    if (export_policy_get(cfg->db, exam_id, &allow_export, &allow_answers) != EXPORT_OK) {
+        return reply_exam_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                                "EXPORT_STORE_FAILED", "读取导出策略失败");
+    }
+
+    enum MHD_Result ret;
+    if (strcmp(rest, "/export-policy") == 0) {
+        if (strcmp(method, "GET") == 0) {
+            ret = respond_export_policy(conn, cfg, exam_id);
+        } else if (strcmp(method, "PUT") == 0) {
+            if (!privileged) {
+                ret = reply_exam_error(conn, MHD_HTTP_FORBIDDEN,
+                                       "EXPORT_FORBIDDEN",
+                                       "仅试卷创建者或管理员可修改导出策略");
+            } else {
+                ret = handle_export_policy_put(conn, exam_id, body, body_len, cfg);
+            }
+        } else {
+            ret = reply_exam_not_allowed(conn, "GET, PUT");
+        }
+    } else if (strncmp(rest, "/export/", 8) == 0 && rest[8] != '\0' &&
+               strchr(rest + 8, '/') == NULL) {
+        if (strcmp(method, "GET") != 0) {
+            ret = reply_exam_not_allowed(conn, "GET");
+        } else {
+            cJSON *exam = NULL;
+            ExamsError read_err = exams_get(cfg->db, exam_id, &exam);
+            if (read_err == EXAMS_NOT_FOUND) {
+                ret = reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXPORT_NOT_FOUND",
+                                       "exam not found");
+            } else if (read_err != EXAMS_OK) {
+                ret = reply_exam_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR,
+                                       "EXPORT_STORE_FAILED", "读取试卷失败");
+            } else {
+                ret = handle_exam_export(conn, exam_id, rest + 8, exam, privileged,
+                                         allow_export, allow_answers, cfg);
+                cJSON_Delete(exam);
+            }
+        }
+    } else {
+        ret = reply_exam_error(conn, MHD_HTTP_NOT_FOUND, "EXPORT_NOT_FOUND",
+                               "exam not found");
+    }
+
+    return ret;
+}
+
 static enum MHD_Result handle_exams(struct MHD_Connection *conn, const char *url,
                                     const char *method, const char *body,
                                     size_t body_len, const AppConfig *cfg) {
@@ -1614,7 +2062,15 @@ static enum MHD_Result handle_exams(struct MHD_Connection *conn, const char *url
                 int id = 0;
                 if (kv_str_to_int(ids[i], &id) != 0 || id <= 0) { ok = 0; break; }
                 cJSON *detail = NULL;
-                if (exams_get(cfg->db, id, &detail) != EXAMS_OK) { ok = 0; break; }
+                ExamsError derr = exams_get(cfg->db, id, &detail);
+                if (derr != EXAMS_OK) {
+                    /* 单卷存储异常（如悬空引用）只隔离该卷：不返回半截详情，
+                     * 也不让整张列表 500（docs/exams.md §4.1、§11）。 */
+                    fprintf(stderr,
+                            "[exams] list_skip_broken_exam (exam_id=%d, reason=%s)\n",
+                            id, exams_error_name(derr));
+                    continue;
+                }
                 cJSON *item = cJSON_Duplicate(detail, 1);
                 cJSON_Delete(detail);
                 if (item == NULL) { ok = 0; break; }
@@ -1662,6 +2118,16 @@ static enum MHD_Result handle_exams(struct MHD_Connection *conn, const char *url
             return respond_exam_detail(conn, id, cfg, MHD_HTTP_CREATED);
         }
         return reply_exam_not_allowed(conn, "GET, POST");
+    }
+
+    /* 导出子路径：/api/v1/exams/{id}/export... */
+    if (strncmp(url, "/api/v1/exams/", sizeof("/api/v1/exams/") - 1) == 0) {
+        const char *after_prefix = url + sizeof("/api/v1/exams/") - 1;
+        const char *query = strchr(after_prefix, '?');
+        const char *export_hit = strstr(after_prefix, "/export");
+        if (export_hit != NULL && (query == NULL || export_hit < query)) {
+            return handle_exports(conn, url, method, body, body_len, cfg, s);
+        }
     }
 
     /* 项路径：/api/v1/exams/{id} 及题目编排子路径 */

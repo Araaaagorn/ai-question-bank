@@ -279,7 +279,7 @@ AI 层（ai_client.c）  →  大模型代理调用
 
 ### 7.3 API 文档
 
-统一 `docs/api.md` 尚在整合中；当前接口契约以模块文档为准：`docs/auth.md`（认证）、`docs/questions.md`（题目）、`docs/kvstore.md`（存储层）。后端开发必须严格按对应模块文档的接口签名实现，新接口先落模块文档再写代码。
+统一 `docs/api.md` 尚在整合中；当前接口契约以模块文档为准：`docs/auth.md`（认证）、`docs/questions.md`（题目）、`docs/exams.md`（试卷）、`docs/export.md`（试卷导出）、`docs/kvstore.md`（存储层）。后端开发必须严格按对应模块文档的接口签名实现，新接口先落模块文档再写代码。
 
 ---
 
