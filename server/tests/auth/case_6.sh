@@ -74,7 +74,7 @@ HTTP_CODE=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' -X POST \
 BODY=$(curl -s --noproxy '*' -X POST "http://127.0.0.1:$PORT/api/v1/auth/register" \
     -H 'Content-Type: application/json' \
     -d '{"username":"r8","password":"mypass123","confirm_password":"mypass123","role":"superadmin"}')
-echo "$BODY" | grep -q '仅支持 student/teacher/admin' && ok "无效 role 提示正确" || fail "无效 role 提示不符（响应: $BODY）"
+echo "$BODY" | grep -q '自助注册仅支持学生角色' && ok "无效 role 提示正确" || fail "无效 role 提示不符（响应: $BODY）"
 
 # 检查点 8：用户名为空
 HTTP_CODE=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' -X POST \

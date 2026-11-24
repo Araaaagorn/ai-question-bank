@@ -393,6 +393,11 @@ elif mode == "review":
                                teacher, method="POST", data=payload)
         assert status == 400, (payload, status)
 
+    # 审核仅 teacher：admin 审核 → 403
+    status, _, _ = request("/api/v1/questions/" + str(pid) + "/review",
+                           admin, method="POST", data={"action": "approve"})
+    assert status == 403
+
     # ── 通过 pid ──
     status, body, _ = request("/api/v1/questions/" + str(pid) + "/review",
                               teacher, method="POST", data={"action": "approve"})

@@ -163,17 +163,14 @@ static enum MHD_Result handle_register(struct MHD_Connection *conn,
                            "密码至少 8 位，且必须包含字母和数字");
     }
 
-    /* 检查角色是否合法 */
-    if (req_role != NULL &&
-        strcmp(req_role, "student") != 0 &&
-        strcmp(req_role, "teacher") != 0 &&
-        strcmp(req_role, "admin") != 0) {
+    /* 自助注册仅允许 student；teacher/admin 由管理员创建（防垂直越权）。 */
+    if (req_role != NULL && strcmp(req_role, "student") != 0) {
         free(username);
         free(password);
         free(confirm);
         free(req_role);
         return reply_error(conn, MHD_HTTP_BAD_REQUEST,
-                           "角色值无效，仅支持 student/teacher/admin");
+                           "自助注册仅支持学生角色，教师/管理员账号由管理员创建");
     }
 
     /* 哈希密码（与 login 使用相同 salt） */
@@ -248,6 +245,115 @@ static enum MHD_Result handle_register(struct MHD_Connection *conn,
     free(db_role);
     free(db_name);
     return reply_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "创建会话失败");
+}
+
+/* POST /api/v1/admin/users：管理员创建账号（teacher/admin/student）。 */
+static enum MHD_Result handle_admin_create_user(struct MHD_Connection *conn,
+                                                const char *body, size_t body_len,
+                                                const AppConfig *cfg) {
+    (void)body_len;
+    const char *auth = MHD_lookup_connection_value(conn, MHD_HEADER_KIND, "Authorization");
+    Session *s = session_validate(extract_bearer_token(auth));
+    if (s == NULL)
+        return reply_error(conn, MHD_HTTP_UNAUTHORIZED, "未登录或 token 已过期");
+    if (strcmp(s->role, "admin") != 0)
+        return reply_error(conn, MHD_HTTP_FORBIDDEN, "仅管理员可执行此操作");
+
+    if (body == NULL || body[0] == '\0')
+        return reply_error(conn, MHD_HTTP_BAD_REQUEST, "请求体为空");
+    cJSON *root = cJSON_Parse(body);
+    if (root == NULL)
+        return reply_error(conn, MHD_HTTP_BAD_REQUEST, "JSON 解析失败");
+
+    char *username = json_get_string(root, "username");
+    char *password = json_get_string(root, "password");
+    char *confirm  = json_get_string(root, "confirm_password");
+    char *role     = json_get_string(root, "role");
+    cJSON_Delete(root);
+
+    if (username == NULL || password == NULL || confirm == NULL || role == NULL) {
+        free(username); free(password); free(confirm); free(role);
+        return reply_error(conn, MHD_HTTP_BAD_REQUEST,
+                           "缺少 username、password、confirm_password 或 role");
+    }
+    if (username[0] == '\0') {
+        free(username); free(password); free(confirm); free(role);
+        return reply_error(conn, MHD_HTTP_BAD_REQUEST, "用户名不能为空");
+    }
+    if (strcmp(password, confirm) != 0) {
+        free(username); free(password); free(confirm); free(role);
+        return reply_error(conn, MHD_HTTP_BAD_REQUEST, "两次输入的密码不一致");
+    }
+    if (!validate_password(password)) {
+        free(username); free(password); free(confirm); free(role);
+        return reply_error(conn, MHD_HTTP_BAD_REQUEST,
+                           "密码至少 8 位，且必须包含字母和数字");
+    }
+    if (strcmp(role, "student") != 0 && strcmp(role, "teacher") != 0 &&
+        strcmp(role, "admin") != 0) {
+        free(username); free(password); free(confirm); free(role);
+        return reply_error(conn, MHD_HTTP_BAD_REQUEST,
+                           "角色值无效，仅支持 student/teacher/admin");
+    }
+
+    const char *salt = "ai-question-bank-demo-salt-2026";
+    char *hash = hash_password(password, salt);
+    free(password);
+    free(confirm);
+    if (hash == NULL) {
+        free(username); free(role);
+        return reply_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "服务器内部错误");
+    }
+
+    int ret = db_create_user(cfg->db, username, hash, role);
+    free(hash);
+    free(role);
+    if (ret == 1) {
+        free(username);
+        return reply_error(conn, MHD_HTTP_CONFLICT, "用户名已存在");
+    }
+    if (ret != 0) {
+        free(username);
+        return reply_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "创建用户失败");
+    }
+
+    /* 管理员代他人创建，不自动登录，仅返回用户信息。 */
+    char *user_json = db_query_user_by_username(cfg->db, username);
+    if (user_json == NULL) {
+        free(username);
+        return reply_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "创建成功但查询用户失败");
+    }
+    cJSON *u_root = cJSON_Parse(user_json);
+    free(user_json);
+    int user_id = 0; char *db_role = NULL; char *db_name = NULL;
+    if (u_root) {
+        cJSON *id_item = cJSON_GetObjectItem(u_root, "id");
+        if (id_item && cJSON_IsNumber(id_item)) user_id = id_item->valueint;
+        db_role = json_get_string(u_root, "role");
+        db_name = json_get_string(u_root, "name");
+    }
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON *user_obj = cJSON_CreateObject();
+    if (resp && user_obj) {
+        cJSON_AddNumberToObject(user_obj, "id", user_id);
+        cJSON_AddStringToObject(user_obj, "username", username);
+        cJSON_AddStringToObject(user_obj, "name", db_name ? db_name : username);
+        cJSON_AddStringToObject(user_obj, "role", db_role ? db_role : "student");
+        cJSON_AddItemToObject(resp, "user", user_obj);
+        char *out = cJSON_PrintUnformatted(resp);
+        cJSON_Delete(resp);
+        cJSON_Delete(u_root);
+        free(username); free(db_role); free(db_name);
+        enum MHD_Result result = reply_json(conn, MHD_HTTP_CREATED, out);
+        cJSON_free(out);
+        return result;
+    }
+    cJSON_Delete(resp);
+    cJSON_Delete(user_obj);
+    cJSON_Delete(u_root);
+    free(username); free(db_role); free(db_name);
+    return reply_error(conn, MHD_HTTP_INTERNAL_SERVER_ERROR, "创建用户响应失败");
 }
 
 /* GET /api/v1/health */
@@ -900,7 +1006,7 @@ static long long parse_review_question_id(struct MHD_Connection *conn,
     return id;
 }
 
-/* POST /api/v1/questions/{id}/review：审核待审核题目（teacher/admin）。 */
+/* POST /api/v1/questions/{id}/review：审核待审核题目（仅 teacher）。 */
 static enum MHD_Result handle_question_review(struct MHD_Connection *conn,
                                               const char *url, const char *body,
                                               size_t body_len, const AppConfig *cfg,
@@ -943,7 +1049,9 @@ static enum MHD_Result handle_question_review(struct MHD_Connection *conn,
     snprintf(reviewer, sizeof(reviewer), "%d", s->user_id);
 
     int failed;
-    /* 先写归属/审核人，最后再改 status，压缩“已生效但归属缺失”的中间态窗口。 */
+    /* 先写归属/审核人，最后再改 status，压缩“已生效但归属缺失”的中间态窗口。
+     * 注意：多次 kv_set 仍是独立 autocommit，非事务；单线程下无并发竞态，但极端
+     * 磁盘/DB 故障可能部分写入。TODO：为 kv_store 增加事务包装，升级多线程时需加锁。 */
     if (approve) {
         failed = kv_set(cfg->db, "qdata", key, "teacher_id", reviewer) != 0 ||
                  kv_set(cfg->db, "qdata", key, "reviewed_by", reviewer) != 0 ||
@@ -984,16 +1092,18 @@ static enum MHD_Result handle_questions(struct MHD_Connection *conn,
                           "{\"error\":\"未登录或 token 已过期\"}");
     }
 
-    /* 审核与 PUT/DELETE 仅教师/管理员；POST 新增对任意登录角色开放。 */
+    /* PUT/DELETE 仅教师/管理员；审核仅教师；POST 新增对任意登录角色开放。 */
     const int is_review = (strcmp(method, "POST") == 0 &&
                            strncmp(url, "/api/v1/questions/",
                                    sizeof("/api/v1/questions/") - 1) == 0 &&
                            str_ends_with(url, "/review"));
-    if (strcmp(method, "PUT") == 0 || strcmp(method, "DELETE") == 0 || is_review) {
-        if (strcmp(s->role, "teacher") != 0 && strcmp(s->role, "admin") != 0) {
-            return reply_error(conn, MHD_HTTP_FORBIDDEN,
-                               "仅教师或管理员可执行此操作");
-        }
+    if ((strcmp(method, "PUT") == 0 || strcmp(method, "DELETE") == 0) &&
+        strcmp(s->role, "teacher") != 0 && strcmp(s->role, "admin") != 0) {
+        return reply_error(conn, MHD_HTTP_FORBIDDEN,
+                           "仅教师或管理员可执行此操作");
+    }
+    if (is_review && strcmp(s->role, "teacher") != 0) {
+        return reply_error(conn, MHD_HTTP_FORBIDDEN, "仅教师可执行审核");
     }
 
     if (strcmp(method, "GET") == 0) {
@@ -1920,6 +2030,12 @@ enum MHD_Result route_dispatch(struct MHD_Connection *conn, const char *url,
         return handle_register(conn, body, body_len, cfg);
     }
 
+    /* POST /api/v1/admin/users：管理员创建账号（teacher/admin/student） */
+    if (strcmp(method, "POST") == 0 &&
+        strcmp(url, "/api/v1/admin/users") == 0) {
+        return handle_admin_create_user(conn, body, body_len, cfg);
+    }
+
     /* POST /api/v1/auth/logout */
     if (strcmp(method, "POST") == 0 &&
         strcmp(url, "/api/v1/auth/logout") == 0) {
@@ -1935,7 +2051,7 @@ enum MHD_Result route_dispatch(struct MHD_Connection *conn, const char *url,
     /* GET /api/v1/ai/access：统一 AI 授权查询（来自 PR #14） */
     if (strcmp(url, "/api/v1/ai/access") == 0) return handle_ai_access(conn, method, cfg);
 
-    /* 题目接口：GET 列表/详情只读（非 active 详情按提交人/教师收口）；POST 新增开放给所有登录角色（学生进待审核）；PUT/DELETE/审核仅 teacher/admin。 */
+    /* 题目接口：GET 列表/详情只读（非 active 详情按提交人/教师收口）；POST 新增开放给所有登录角色（学生进待审核）；PUT/DELETE 仅 teacher/admin；审核仅 teacher。 */
     if (strcmp(url, "/api/v1/questions") == 0 ||
         strncmp(url, "/api/v1/questions/", sizeof("/api/v1/questions/") - 1) == 0) {
         return handle_questions(conn, url, method, body, body_len, cfg);

@@ -37,9 +37,9 @@ Content-Type: application/json
 | `username` | 是 | 用户名，不能为空 |
 | `password` | 是 | 密码（≥8 位，必须同时包含字母和数字） |
 | `confirm_password` | 是 | 确认密码，必须与 password 一致 |
-| `role` | 否 | 角色：`student`（默认）/ `teacher` / `admin` |
+| `role` | 否 | 仅支持 `student`（默认）；`teacher`/`admin` 账号由管理员创建 |
 
-> **前端范围说明**：网页端注册页只提供 `student` / `teacher` 两个选项，不开放自助注册 `admin`（管理员账号由平台负责人创建）。接口本身仍按上表接受三种角色，如需收紧为「自助注册仅 `student`」属服务端策略调整，另行跟进。
+> **角色策略**：自助注册仅允许 `student`（默认）；`teacher`/`admin` 账号统一由管理员通过 [`POST /api/v1/admin/users`](#25-管理员创建账号) 创建，防止未登录用户自选高权限角色造成垂直越权。
 
 **成功响应（201 Created）：**
 
@@ -64,7 +64,7 @@ Content-Type: application/json
 | 400 | 请求体为空 / JSON 解析失败 / 缺少必填字段 / 用户名不能为空 |
 | 400 | 两次密码不一致 |
 | 400 | 密码不符合强度要求（≥8 位 + 字母 + 数字） |
-| 400 | 角色值无效（仅支持 student/teacher/admin） |
+| 400 | 角色无效（自助注册仅支持学生角色） |
 | 409 | 用户名已存在 |
 | 500 | 服务器内部错误（创建用户失败 / 创建会话失败） |
 
@@ -134,6 +134,41 @@ Authorization: Bearer <token>
 | 状态码 | 说明 |
 | --- | --- |
 | 401 | 未登录或 token 已过期 |
+
+### 2.5 管理员创建账号
+
+```
+POST /api/v1/admin/users
+Authorization: Bearer <admin-token>
+Content-Type: application/json
+
+{"username": "newteacher", "password": "mypass123", "confirm_password": "mypass123", "role": "teacher"}
+```
+
+仅 `admin` 可调用，用于创建 `teacher` / `admin` / `student` 账号。管理员代他人创建，不自动登录、不返回 token。
+
+**成功响应（201 Created）：**
+
+```json
+{
+  "user": {
+    "id": 5,
+    "username": "newteacher",
+    "name": "newteacher",
+    "role": "teacher"
+  }
+}
+```
+
+**失败响应：**
+
+| 状态码 | 说明 |
+| --- | --- |
+| 400 | 请求体为空 / JSON 非法 / 缺少字段 / 用户名空 / 两次密码不一致 / 密码强度不足 / role 无效 |
+| 401 | 未登录或 token 已过期 |
+| 403 | 非 admin 调用 |
+| 409 | 用户名已存在 |
+| 500 | 服务器内部错误 |
 
 ---
 
@@ -244,10 +279,11 @@ DEMO_STUDENT_PW=student123
 | `server/tests/auth/case_2.sh` | 登录失败场景（错误密码 / 不存在用户 / 缺少字段） |
 | `server/tests/auth/case_3.sh` | 当前用户信息（有效 token / 无 token / 无效 token） |
 | `server/tests/auth/case_4.sh` | 登出（登出返回 200 / 登出后 token 失效） |
-| `server/tests/auth/case_5.sh` | 注册成功（admin/teacher/student 三种角色） |
+| `server/tests/auth/case_5.sh` | 注册：student 成功、teacher/admin 被拒（400） |
 | `server/tests/auth/case_6.sh` | 注册校验失败（密码过短/纯字母/纯数字/不一致/缺字段/用户名重复/无效 role/空用户名，共 10 条） |
 | `server/tests/auth/case_7.sh` | 注册后自动登录（`/me` 验证 → 登出 → token 失效） |
 | `server/tests/auth/case_8.sh` | 注册后二次登录验证（错误密码 / 不存在用户 / `/me` 访问） |
+| `server/tests/auth/case_9.sh` | 管理员创建账号（admin 建 teacher/student、非 admin 403、未登录 401、非法 role 400、重复 409） |
 
 ### 6.2 运行测试
 

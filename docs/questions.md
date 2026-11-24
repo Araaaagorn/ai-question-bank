@@ -27,8 +27,8 @@
 非 active 题目的详情另按提交人/教师收口（见「GET /api/v1/questions/{id}」）。
 写接口：
 - `POST 新增`：任意已登录角色；`student` 提交的题目进入待审核（`pending`），不直接生效。
-- `PUT 修改` / `DELETE 删除` / `POST 审核（/api/v1/questions/{id}/review）`：仅 `teacher` 与 `admin`，
-  `student` 返回 403（权限检查先于题目存在性校验）。
+- `PUT 修改` / `DELETE 删除`：仅 `teacher` 与 `admin`，`student` 返回 403。
+- `POST 审核（/api/v1/questions/{id}/review）`：仅 `teacher`，`student`/`admin` 返回 403。
 
 题目状态：`pending`（待审核）、`active`（生效）、`rejected`（审核不通过）。
 学生提交的题目记录 `submitted_by`（提交人），审核后记录 `reviewed_by`（审核人）；
@@ -115,7 +115,7 @@
 成功：`200` + `{"status":"ok"}`（删除后该 id 的 GET 返回 404）。
 失败：`404` 题目不存在/id 非法；`401` 未登录；`403` 学生越权。
 
-### POST /api/v1/questions/{id}/review（teacher/admin，审核）
+### POST /api/v1/questions/{id}/review（teacher，审核）
 
 请求体：`{"action":"approve"}`（通过）或 `{"action":"reject"}`（不通过）。
 仅可审核 `status=pending` 的题目。
@@ -131,6 +131,8 @@
 - `rejected` 为终态：学生无法修改、删除或重新提交自己的被拒稿；如需再次投稿需重新 `POST`。
 - `approve` 后题目归属（`teacher_id`）为审核教师，后续 AI 对话按该教师的配置与额度解析；
   若该教师未配置 API 凭据，学生对该题的 AI 对话会返回「教师API不可用」。
+- 审核队列为**全局队列**：任意教师可审核任意学生投稿并成为该题归属教师；本阶段不建立师生/班级关系，
+  也不按「投稿学生所属教师」做隔离过滤。
 
 | 状态码 | 响应 | 场景 |
 | --- | --- | --- |
@@ -138,7 +140,7 @@
 | 201 | `{"question":{...}}` | POST 创建成功 |
 | 400 | `{"error":"..."}` | 请求体缺失/JSON 非法/字段校验失败/action 非法/status 参数非法 |
 | 401 | `{"error":"未登录或 token 已过期"}` | 无有效会话，优先于题目参数校验 |
-| 403 | `{"error":"仅教师或管理员可执行此操作"}` | 非 teacher/admin 调用 PUT/DELETE/审核，或查询非 active 列表 |
+| 403 | `{"error":"仅教师或管理员可执行此操作"}` | 非 teacher/admin 调用 PUT/DELETE、非 teacher 调用审核，或查询非 active 列表 |
 | 404 | `{"error":"question not found"}` | 不存在题目、无权读取的非 active 题目，或不是正整数的 id、溢出、额外路径段 |
 | 405 | `{"error":"method not allowed"}` | 登录后对题目接口使用 GET/POST/PUT/DELETE 之外的方法；响应含 `Allow: GET, POST, PUT, DELETE` |
 | 409 | `{"error":"题目不在待审核状态"}` | 对非 pending 题目执行审核 |
