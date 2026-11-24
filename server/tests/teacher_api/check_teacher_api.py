@@ -63,8 +63,9 @@ with tempfile.TemporaryDirectory(prefix='teacher-api-test-') as tmp:
             server=start_c()
             def login(username,password): return expect(base,'/api/v1/auth/login',200,'POST',{'username':username,'password':password})[0]['token']
             teacher=login('teacher','teacher123'); student=login('student','student123'); admin=login('admin','admin123')
-            registered=expect(base,'/api/v1/auth/register',201,'POST',{'username':'teacher-b','password':'TeacherB123','confirm_password':'TeacherB123','role':'teacher'})[0]
-            second=registered['token']; second_id=registered['user']['id']
+            registered=expect(base,'/api/v1/admin/users',201,'POST',{'username':'teacher-b','password':'TeacherB123','confirm_password':'TeacherB123','role':'teacher'},admin)[0]
+            second_id=registered['user']['id']
+            second=login('teacher-b','TeacherB123')
             student_b=expect(base,'/api/v1/auth/register',201,'POST',{'username':'student-b','password':'StudentB123','confirm_password':'StudentB123'})[0]['token']
             path='/api/v1/teacher/ai-api'
             expect(base,path,401)

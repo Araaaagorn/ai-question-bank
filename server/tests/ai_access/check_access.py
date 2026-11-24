@@ -46,9 +46,13 @@ for token in [student,admin,teacher]:
 assert request('/api/v1/ai/access','POST',{'allowed':True},admin)[0] == 405
 assert request('/api/v1/ai/access','PUT',{'allowed':True},admin)[0] == 405
 assert request('/api/v1/chat','POST',{**payload,'user_id':3,'allowed':True},teacher,{'X-User-Id':'3'})[0] == 403
-status,new=request('/api/v1/auth/register','POST',{'username':'access_self_admin','password':'access1234','confirm_password':'access1234','role':'admin','ai_access':True})
-assert status == 201
+# 自助注册仅 student；注册体中的 ai_access 字段必须被忽略（不授予 AI 权限）
+status,new=request('/api/v1/auth/register','POST',{'username':'access_self','password':'access1234','confirm_password':'access1234','ai_access':True})
+assert status == 201 and new['user']['role'] == 'student'
 assert request('/api/v1/chat','POST',payload,new['token'])[0] == 403
+# 自助注册 teacher/admin 被拒（防垂直越权）
+assert request('/api/v1/auth/register','POST',{'username':'access_self_t','password':'access1234','confirm_password':'access1234','role':'teacher'})[0] == 400
+assert request('/api/v1/auth/register','POST',{'username':'access_self_a','password':'access1234','confirm_password':'access1234','role':'admin'})[0] == 400
 
 operator('grant')
 assert operator('status')['ai_access']['allowed']

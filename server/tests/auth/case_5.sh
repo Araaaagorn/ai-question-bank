@@ -28,16 +28,18 @@ BODY=$(curl -s --noproxy '*' -X POST "http://127.0.0.1:$PORT/api/v1/auth/registe
     -d '{"username":"regstu2","password":"mypass123","confirm_password":"mypass123","role":"student"}')
 echo "$BODY" | grep -q '"role":"student"' && ok "注册 role=student 成功" || fail "role=student 失败（响应: $BODY）"
 
-# 检查点 3：传 role=teacher
-BODY=$(curl -s --noproxy '*' -X POST "http://127.0.0.1:$PORT/api/v1/auth/register" \
+# 检查点 3：自助注册 role=teacher 被拒（仅学生可自助注册）
+HTTP_CODE=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/v1/auth/register" \
     -H 'Content-Type: application/json' \
     -d '{"username":"regtch1","password":"mypass123","confirm_password":"mypass123","role":"teacher"}')
-echo "$BODY" | grep -q '"role":"teacher"' && ok "注册 role=teacher 成功" || fail "role=teacher 失败（响应: $BODY）"
+[ "$HTTP_CODE" = "400" ] && ok "自助注册 role=teacher 返回 400" || fail "role=teacher 期望 400 实际 $HTTP_CODE"
 
-# 检查点 4：传 role=admin
-BODY=$(curl -s --noproxy '*' -X POST "http://127.0.0.1:$PORT/api/v1/auth/register" \
+# 检查点 4：自助注册 role=admin 被拒（仅学生可自助注册）
+HTTP_CODE=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' -X POST \
+    "http://127.0.0.1:$PORT/api/v1/auth/register" \
     -H 'Content-Type: application/json' \
     -d '{"username":"regadm1","password":"mypass123","confirm_password":"mypass123","role":"admin"}')
-echo "$BODY" | grep -q '"role":"admin"' && ok "注册 role=admin 成功" || fail "role=admin 失败（响应: $BODY）"
+[ "$HTTP_CODE" = "400" ] && ok "自助注册 role=admin 返回 400" || fail "role=admin 期望 400 实际 $HTTP_CODE"
 
 [ "$FAIL" -eq 0 ] || exit 1
