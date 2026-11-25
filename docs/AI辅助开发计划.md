@@ -25,7 +25,7 @@
 
 | 成果 | 说明 |
 |------|------|
-| kv_store 目录式存储层 | PR #5 合入：namespace → SQLite 表 `kv_{ns}`，含 18 断言单元测试与 `docs/kvstore.md` 接口文档 |
+| kv_store 目录式存储层 | PR #5 合入：namespace → 同名 SQLite 表，含 18 断言单元测试与 `docs/kvstore.md` 接口文档 |
 | 题目只读 API | `GET /api/v1/questions`（列表/详情），数据存 kv_store `qdata` namespace，5 道固定题 seed |
 | 前端三页 | 登录页 / 题目列表页 / 对话页（SPA hash 路由，在线 + file:// 离线双模式，35 项端到端断言） |
 
@@ -45,7 +45,7 @@
 
 | 阶段 | AI 做什么 | 人做什么 |
 |------|----------|----------|
-| 需求理解 | 解读 api.md 接口定义 | 确认需求正确性 |
+| 需求理解 | 解读模块契约文档接口定义 | 确认需求正确性 |
 | 代码生成 | 根据 AGENT.md + 头文件 + Makefile 生成 C 代码 | 粘贴 Prompt 模板 |
 | AI 自查 | 逐条对照编码规范自检 | 确认自查通过 |
 | 本地 review | — | 阅代码逻辑、安全风险 |
@@ -105,7 +105,7 @@
 1. 不引入 npm/webpack/vite 等工具链，直接修改 web/ 下静态文件；
 2. fetch 调用后端 /api/v1/* 接口，携带 Authorization: Bearer <token>；
 3. 错误处理：后端返回 {"error":"..."} 时展示用户可读提示；
-4. 与 docs/api.md 定义的接口字段完全一致；
+4. 与对应模块契约文档定义的接口字段完全一致；
 5. 保持与现有 style.css / app.js 风格一致。
 ```
 
@@ -131,7 +131,7 @@
 任务示例：实现内容审核功能 / 通知中心
 
 输入：AGENT.md + server/Makefile + server/include/*.h（现有头文件签名参考）
-      + docs/api.md（接口定义参考）
+      + 对应模块契约文档（接口定义参考）
 
 注意：
 - 认证模块已由刘英哲完成（auth.c/h，登录/注册/鉴权均已实现）
@@ -216,14 +216,14 @@
 任务示例：维护项目文档体系与进度跟踪
 
 输入：AGENT.md 现有内容 + @功能说明书 + docs/ 下已有文档
-      + docs/项目开发计划甘特图.xlsx（进度基准）
+      + docs/项目开发时间轴.md（进度基准）
 
 约束：
 - 文档格式与现有 docs/ 风格一致，Markdown 优先
 - 引用的文件路径使用相对路径（如 docs/architecture.md）
 - 事实信息以 AGENT.md 和功能说明书为准，不编造
 - 跟踪各里程碑进度，同步更新甘特图与周报
-- 维护 docs/api.md 接口定义，与后端实现保持同步
+- 维护各模块契约文档接口定义，与后端实现保持同步
 ```
 
 ---

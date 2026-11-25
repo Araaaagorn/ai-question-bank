@@ -32,17 +32,21 @@ make test           # 冒烟测试（自动启动服务并验证健康检查 + �
 ```bash
 # 方式一：export（开发调试）
 export PORT=8000
-export AI_API_KEY=sk-xxxx
+export AI_SERVICE_URL=http://127.0.0.1:8001
+export AI_SERVICE_TOKEN=<与 Pi 一致的内部凭证>
 make -C server run
 
 # 方式二：.env 文件（生产，配合 systemd EnvironmentFile）
 cp server/.env.example server/.env
-# 编辑 server/.env：PORT / DATABASE_PATH / AI_API_BASE_URL / AI_API_KEY / AI_MODEL
+# 编辑 server/.env：PORT / DATABASE_PATH / WEB_ROOT / AI_SERVICE_URL / AI_SERVICE_TOKEN / AI_KEY_ENCRYPTION_KEY
 ```
+
+C 后端只访问内部 Pi 服务；模型变量 `AI_API_BASE_URL` / `AI_MODEL` / `AI_API_KEY` **仅配置在 Pi 服务环境**（`ai-service/.env`），C 不读取这些变量。默认 `AI_ROUTING_MODE=teacher` 模式下 Pi 无需全局 `AI_API_KEY`，教师 API Key 由 C 加密托管；仅显式 `platform` 兼容模式才在 Pi 环境配置平台 Key。
 
 生产环境务必：
 
-- 填写真实 `AI_API_KEY`（仅后端持有，不暴露给前端）；
+- 配置 C 与 Pi 一致的 `AI_SERVICE_TOKEN`（内部服务凭证，与用户 token、模型 Key 相互独立）；
+- 教师模式加密主密钥 `AI_KEY_ENCRYPTION_KEY` 单独备份（丢失后旧密文不可恢复）；
 - 数据库文件（`server/data/`）已被 `.gitignore` 排除，注意定期备份。
 
 ## 4. 运行与验证
