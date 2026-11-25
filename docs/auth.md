@@ -1,7 +1,7 @@
 # 用户认证模块文档
 
 > 对应 PR：feat/auth（用户注册接口 + 用户存储迁移至 kv_store + session 清理机制）
-> 最后更新：2026-10-13
+> 最后更新：2026-11-25（token 生成与存储表名按当前代码勘误）
 
 ---
 
@@ -181,8 +181,7 @@ Content-Type: application/json
 
 ### 3.2 Token 生成
 
-- 64 位随机十六进制字符串（`rand() % 16`，demo 够用）。
-- 有碰撞重试机制（最多 5 次）。
+- 64 位随机十六进制字符串（由 OpenSSL `RAND_bytes` 生成；随机源失败时拒绝创建会话，不降级为伪随机数）。
 
 ### 3.3 Token 有效期
 
@@ -250,7 +249,7 @@ DEMO_STUDENT_PW=student123
 | | `role` / `"admin"` | 角色 |
 | | `password_hash` / `"<SHA-256>"` | 密码哈希 |
 
-底层映射为 SQLite 表 `kv_users`（由 kv_store 自动创建），无需手动管理 schema。详见 `docs/kvstore.md`。
+底层映射为同名 SQLite 表 `users`（由 kv_store 自动创建），无需手动管理 schema。详见 `docs/kvstore.md`。
 
 ### 5.2 用户查询与操作函数
 

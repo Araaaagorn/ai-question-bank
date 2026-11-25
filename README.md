@@ -1,20 +1,12 @@
 # AI+题库智能教学平台
 
 
-## 教师 API v1.3（当前默认模式）
-
-默认AI_ROUTING_MODE=teacher：教师注册/登录即有资格GET/PUT/PATCH自己的/api/v1/teacher/ai-api，一个教师一条配置。学生提交题目后由C从qdata.teacher_id解析配置并校验日额度（默认每学生/每教师/上海自然日20次）；不叠加旧CLI授权，不回退平台Key。
-
-仓库根目录先执行python3 scripts/configure_pi_demo.py和python3 scripts/configure_teacher_api.py，后者只补充C的加密主密钥，绝不打印或覆盖已有值。两个服务的AI_ROUTING_MODE保持一致；教师模式Pi无需全局AI_API_KEY。保留已有Key只在显式platform兼容模式使用。
-
-启动后由前端/接口工具登录教师并配置其API。现有演示题归属admin，不会自动转移，需题库负责人提供teacher归属的题目联调。不要把新限额/路由测试误判为旧演示题直接可调用。
-
-前端接口：`docs/pi-chat-api.md`（1.3）、`docs/teacher-api.md`及OpenAPI；教师Key只进后端，GET只回脱敏信息。本次没有改web业务页面、题库CRUD或注册策略。
+> **当前默认 AI 路由模式为 `teacher`（教师自管 API）**：教师登录后管理自己的 `/api/v1/teacher/ai-api`；学生调用按题目归属教师的配置校验并扣减日额度（默认每学生/每教师/上海自然日 20 次），不叠加旧 `platform` CLI 授权、也不回退平台 Key。接口与配额规则见 [`docs/teacher-api.md`](docs/teacher-api.md)、[`docs/pi-chat-api.md`](docs/pi-chat-api.md)（1.3）与 [`docs/ai-access.md`](docs/ai-access.md)。
 
 
-一个面向教育场景的 **多教师、多学生、多租户** 智能题库与试卷管理平台。教师维护题库/试卷并配置 AI 解答；学生提交题目、查看 AI 解答、在分支对话树中追问；管理员负责用户、全局 API、审计与运维。
+一个面向教育场景的 **多教师、多学生、多租户** 智能题库与试卷管理平台。教师维护题库/试卷并配置 AI 解答；学生提交题目、查看 AI 解答、在同题多轮对话中追问；管理员负责用户、全局 API、审计与运维。
 
-功能预期详见 [`docs/AI题库项目整体预期功能说明书.md`](docs/AI题库项目整体预期功能说明书.md)。
+当前已实现功能的权威规格见 [`docs/详细功能说明书.md`](docs/详细功能说明书.md)；整体愿景（含部分尚未实现的目标功能）见 [`docs/AI题库项目整体预期功能说明书.md`](docs/AI题库项目整体预期功能说明书.md)。
 
 **面向对象分析与设计文档**（用况图/类图/顺序图/状态图/包图 + OOD 设计，含 PlantUML 源文件与渲染图）见 [`OOA_OOD/README.md`](OOA_OOD/README.md)。
 
@@ -96,7 +88,7 @@ C 主后端通过内部 HTTP 接口调用独立的 Node.js/TypeScript Pi 服务�
 支持完整讲解、分层提示、错因分析，以及异步任务、同题追问和取消，默认可用 Mock 联调。
 提供受限算术、一元一次方程求解/代入校验工具和30个解题评测案例。
 
-- 统一 API 授权与边界：[docs/ai-access.md](docs/ai-access.md)（所有账号默认无AI权限，需运维CLI显式授权）
+- 统一 API 授权与边界：[docs/ai-access.md](docs/ai-access.md)（默认 teacher 模式；仅显式 `platform` 兼容模式下所有账号默认无 AI 权限、需运维 CLI 显式授权）
 - 启动与模型配置：[ai-service/README.md](ai-service/README.md)
 - V4.1-Flash真实模型阶段验证：[docs/pi-chat-evaluation.md](docs/pi-chat-evaluation.md)
 - 前端接口档案：[docs/pi-chat-api.md](docs/pi-chat-api.md)

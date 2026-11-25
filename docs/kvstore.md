@@ -3,14 +3,14 @@
 ## 设计概念
 
 ```
-一级目录 = namespace → 数据库表 kv_{sanitized_ns}
+一级目录 = namespace → 同名数据库表（如 `qdata`）
    ↓
 一个 key 下可通过 value_name 对应多个 value
 ```
 
 | 概念 | 映射 |
 |---|---|
-| **namespace**（一级目录） | 数据库表 `kv_{name}` + `kv_tables` 元信息记录 |
+| **namespace**（一级目录） | 同名数据库表 `<namespace>` + `kv_tables` 元信息记录 |
 | **key**（键） | 表中 `key_name` 列 |
 | **value_name**（值名） | 表中 `value_name` 列 |
 | **value**（值） | 表中 `value` 列 |

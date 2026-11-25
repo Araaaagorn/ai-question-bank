@@ -108,15 +108,14 @@ echo "$BODY" | grep -q '"status":"ok"' && ok "健康检查" || fail "健康检�
 ```
 tests/
 ├── auth/          # 认证相关 API 测试
-│   ├── case_1.sh
-│   ├── case_2.sh
-│   ├── case_3.sh
-│   └── case_4.sh
 ├── health/        # 健康检查测试
-│   └── case_1.sh
-├── kv/            # kv_store 单元测试
-│   ├── case_unit.c
-│   └── case_unit.sh
+├── kv/            # kv_store 单元测试（case_unit.c + case_unit.sh）
+├── questions/     # 题目接口回归（+ check_api.py / db_test.c）
+├── exams/         # 试卷存储层单元测试 + 接口回归（+ check_exams.py）
+├── export/        # 试卷导出回归（PDF/MD/LaTeX/DOCX + 策略）
+├── chat/          # AI 对话链路回归（需临时 Pi Mock）
+├── ai_access/     # 全局 AI 授权单元/集成测试
+├── teacher_api/   # 教师 API 配置与额度测试
 └── run_tests.sh   # 测试运行器
 ```
 
