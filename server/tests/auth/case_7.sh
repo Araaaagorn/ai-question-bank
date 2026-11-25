@@ -17,7 +17,7 @@ PORT="${TEST_PORT:-${PORT:-8099}}"
 # 先注册一个用户
 BODY=$(curl -s --noproxy '*' -X POST "http://127.0.0.1:$PORT/api/v1/auth/register" \
     -H 'Content-Type: application/json' \
-    -d '{"username":"autologin","password":"mypass123","confirm_password":"mypass123","role":"teacher"}')
+    -d '{"username":"autologin","password":"mypass123","confirm_password":"mypass123"}')
 TOKEN=$(echo "$BODY" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 [ -n "$TOKEN" ] && ok "注册后拿到 token" || { fail "注册后未返回 token"; exit 1; }
 
@@ -25,7 +25,7 @@ TOKEN=$(echo "$BODY" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*
 BODY=$(curl -s --noproxy '*' "http://127.0.0.1:$PORT/api/v1/auth/me" \
     -H "Authorization: Bearer $TOKEN")
 echo "$BODY" | grep -q '"name":"autologin"' && ok "注册后 /me 返回正确 username" || fail "/me username 不符（响应: $BODY）"
-echo "$BODY" | grep -q '"role":"teacher"' && ok "注册后 /me 返回正确 role" || fail "/me role 不符（响应: $BODY）"
+echo "$BODY" | grep -q '"role":"student"' && ok "注册后 /me 返回正确 role" || fail "/me role 不符（响应: $BODY）"
 
 # 检查点 2：注册后能正常登出
 HTTP_CODE=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' -X POST \
