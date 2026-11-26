@@ -9,7 +9,7 @@
 - 启动时插入 5 道题：一元一次方程、导数、极限、牛顿第二定律、C 的 sizeof。
 - 包含 `content`、`options`、`answer`、`analysis`、`knowledge_points`、`type`。
 - 数据库存储沿用 `content/answer/analysis`，新增 `options`、`knowledge_points`（JSON 数组文本）、
-  `question_type` 与内部 `seed_key`。新增字段兼容旧的 questions 表。
+  `type` 与内部 `seed_key`。新增字段兼容旧的 questions 表。
 - `seed_key` 唯一索引保证重复启动不会重复插入，也不会覆盖已有题目的内容、答案或状态。
 - 旧库只增加字段与缺失的 seed，保留原有数据和 id。新库默认题目 id 为 1–5；
   **前端必须使用列表返回的 id，不可硬编码 id 或题目数量。**
@@ -18,7 +18,7 @@
 - 写接口新增的题目 id 由服务端分配（当前最大 id + 1），`teacher_id` 记录创建者，
   `status` 固定为 `active`，不写入 `seed_key`。
 
-## 接口契约（供题目列表页、对话页与 api.md 维护者使用）
+## 接口契约（供题目列表页、对话页与接口文档维护者使用）
 
 所有题目接口均需登录取得 token，然后携带 `Authorization: Bearer <token>`。
 未登录、无效或已登出 token 返回 401。
@@ -193,6 +193,6 @@ HTTP 回归使用 Python 3 标准库（Ubuntu 与 ubuntu-latest 已提供），�
 ## 联调交接与剩余人工验收
 
 后端契约和自动回归已提供。曹渲东的列表页可使用 questions 数组，点击后传递题目 id；
-王英杰的对话页可使用详情 question 对象；戴儒骋可将本节契约整合进统一 api.md。
+王英杰的对话页可使用详情 question 对象；戴儒骋可将本节契约整合进统一接口文档。
 PDF 中任务 D 的实际前端联调、演示和队友 PR 审查，需要相关模块就绪后由团队完成。
 合入 main 仍需按照 CONTRIBUTING.md 通过 PR、CI 与至少一名队友审查。

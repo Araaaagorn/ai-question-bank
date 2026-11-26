@@ -1,15 +1,7 @@
 # AGENT.md — AI Agent 项目手册
 
 
-## 教师 API v1.3（当前默认模式）
-
-默认AI_ROUTING_MODE=teacher：教师注册/登录即有资格GET/PUT/PATCH自己的/api/v1/teacher/ai-api，一个教师一条配置。学生提交题目后由C从qdata.teacher_id解析配置并校验日额度（默认每学生/每教师/上海自然日20次）；不叠加旧CLI授权，不回退平台Key。
-
-仓库根目录先执行python3 scripts/configure_pi_demo.py和python3 scripts/configure_teacher_api.py，后者只补充C的加密主密钥，绝不打印或覆盖已有值。两个服务的AI_ROUTING_MODE保持一致；教师模式Pi无需全局AI_API_KEY。保留已有Key只在显式platform兼容模式使用。
-
-启动后由前端/接口工具登录教师并配置其API。现有演示题归属admin，不会自动转移，需题库负责人提供teacher归属的题目联调。不要把新限额/路由测试误判为旧演示题直接可调用。
-
-前端接口：`docs/pi-chat-api.md`（1.3）、`docs/teacher-api.md`及OpenAPI；教师Key只进后端，GET只回脱敏信息。本次没有改web业务页面、题库CRUD或注册策略。
+> **当前默认 AI 路由模式为 `teacher`（教师自管 API）**：教师登录后管理自己的 `/api/v1/teacher/ai-api`；学生调用按题目归属教师的配置校验并扣减日额度（默认每学生/每教师/上海自然日 20 次），不叠加旧 `platform` CLI 授权、也不回退平台 Key。接口与配额规则见 [teacher-api.md](teacher-api.md)、[pi-chat-api.md](pi-chat-api.md)（1.3）与 [ai-access.md](ai-access.md)。
 
 
 > 维护者：戴儒骋、卢恒毅
@@ -35,7 +27,7 @@
 | 模块 | 技术 | 说明 |
 |------|------|------|
 | 后端 | **C11** · libmicrohttpd · SQLite3 · libcurl · cJSON | HTTP 服务 + 存储 + AI 代理（API Key 不出后端） |
-| 存储层 | db.c（SQL 关系表）+ **kv_store**（目录式 KV） | 当前users/questions走KV；namespace实际映射同名表（users/questions），旧文档的kv_前缀不适用于现实现。AI授权/审计为专用关系表 |
+| 存储层 | db.c（SQL 关系表）+ **kv_store**（目录式 KV） | 当前 users/qdata/edata 走 KV；namespace 实际映射同名表（users/qdata/edata），旧文档的 kv_ 前缀不适用于现实现。AI 授权/审计/教师 API/额度为专用关系表 |
 | AI执行 | Node.js >=22.19 · TypeScript · Pi 0.84.1 | 内部教学技能/受限数学工具/异步队列，teacher模式Key由C加密托管并按任务交给Pi；platform模式Key仅Pi环境持有 |
 | 前端 | 纯 HTML / CSS / JS | 静态页面，由 C 服务端直接托管，无构建工具链 |
 | 构建 | GNU Make + gcc | `-std=c11 -Wall -Wextra`，零警告编译 |
@@ -61,33 +53,46 @@ ai-question-bank/
 │   ├── Makefile                # lint / build / test / run / clean
 │   ├── .env.example            # 环境变量配置示例
 │   ├── include/                # 头文件
+│   │   ├── ai_access.h         # platform 模式全局 AI 授权接口
 │   │   ├── ai_client.h         # AI 代理接口（libcurl）
 │   │   ├── auth.h              # 认证鉴权接口
 │   │   ├── config.h            # 环境变量配置（含共享 sqlite3 连接）
 │   │   ├── db.h                # SQLite 数据库接口
 │   │   ├── debug.h             # 调试日志宏（编译时 -DDEBUG 开关，零开销）
 │   │   ├── exams.h             # 试卷存储层接口（F03，namespace "edata"）
+│   │   ├── export.h            # 试卷导出接口（F09）
 │   │   ├── http_server.h       # HTTP 守护进程
 │   │   ├── kv_store.h          # 目录式键值存储接口
-│   │   └── routes.h            # 路由分发
+│   │   ├── routes.h            # 路由分发
+│   │   ├── teacher_api.h       # 教师 API 凭证/额度接口
+│   │   └── teacher_api_routes.h # 教师 API 配置路由接口
 │   ├── src/                    # 源码
 │   │   ├── main.c              # 入口：加载配置 → db_init → kv_init → seed → 启动 HTTP
 │   │   ├── config.c            # 环境变量读取（PORT/数据库/AI）
 │   │   ├── db.c                # SQLite 建表、demo 账号 seed、固定题目 seed（经 kv_store 写入）
 │   │   ├── http_server.c       # libmicrohttpd 守护进程
 │   │   ├── routes.c            # /api/v1/* JSON API + 静态文件服务
+│   │   ├── ai_access.c         # platform 模式全局 AI 授权（建表/查询）
 │   │   ├── ai_client.c         # AI API 代理调用（libcurl）
 │   │   ├── auth.c              # 认证鉴权实现
 │   │   ├── kv_store.c          # 目录式键值存储实现（namespace → 同名表）
-│   │   └── exams.c             # 试卷存储层实现（CRUD/编排/列表过滤/题目删除联动）
+│   │   ├── exams.c             # 试卷存储层实现（CRUD/编排/列表过滤/题目删除联动）
+│   │   ├── export.c            # 试卷导出实现（PDF/MD/LaTeX/DOCX）
+│   │   ├── teacher_api.c       # 教师 API 凭证加密/额度实现
+│   │   └── teacher_api_routes.c # 教师 API 配置路由实现
 │   ├── third_party/            # cJSON（MIT 协议，单文件库：cJSON.c + cJSON.h）
 │   └── tests/                  # 测试（run_tests.sh 自动发现测试组）
-│       ├── run_tests.sh        # 测试入口：自动遍历 auth/health/questions/kv 四组
+│       ├── run_tests.sh        # 测试入口：自动遍历全部测试组
 │       ├── TEST.md             # 测试说明文档
-│       ├── auth/               # 认证接口回归（case_1~4.sh）
-│       ├── health/             # 健康检查回归（case_1.sh）
+│       ├── auth/               # 认证接口回归
+│       ├── health/             # 健康检查回归
 │       ├── kv/                 # kv_store 单元测试（case_unit.c + case_unit.sh，18 断言）
-│       └── questions/          # 题目接口回归（case_1~5.sh）+ 辅助（check_api.py / db_test.c）
+│       ├── questions/          # 题目接口回归 + 辅助（check_api.py / db_test.c）
+│       ├── exams/              # 试卷存储层单元测试 + 接口回归
+│       ├── export/             # 试卷导出回归
+│       ├── chat/               # AI 对话链路回归
+│       ├── ai_access/          # 全局 AI 授权单元/集成测试
+│       └── teacher_api/        # 教师 API/额度测试
 │
 ├── web/                        # 静态前端（SPA，hash 路由）
 │   ├── index.html
@@ -95,19 +100,28 @@ ai-question-bank/
 │   └── js/
 │       ├── app.js              # 页面骨架与路由切换
 │       ├── api.js              # API 客户端（在线模式 + file:// 离线演示降级）
-│       ├── auth.js             # 登录页
+│       ├── auth.js             # 登录/注册页
 │       ├── questions.js        # 题目列表页
-│       └── chat.js             # 对话页（题目详情 + AI 对话）
+│       ├── question-form.js    # 题目新增/编辑表单页
+│       ├── chat.js             # 对话页（题目详情 + AI 对话）
+│       ├── pi-chat-client.js   # Pi 对话提交/轮询/取消封装
+│       ├── exams.js            # 试卷列表/浏览页
+│       ├── exam-form.js        # 试卷编辑页
+│       ├── teacher-api.js      # 教师 AI API 配置页
+│       └── utils.js            # 通用工具（escapeHtml 等）
 │
 ├── docs/                       # 项目文档
 │   ├── AGENT.md                # 本文件
-│   ├── AI协作指南.md / AI辅助开发计划.md
-│   ├── AI题库项目整体预期功能说明书.md
-│   ├── architecture.md / auth.md / environment-setup.md
+│   ├── 详细功能说明书.md        # 开发级功能规格（当前实现权威参考）
+│   ├── 功能盘点与实现状态.md     # 功能实现状态与差异清单
+│   ├── 软件需求说明书.md / AI题库项目整体预期功能说明书.md
+│   ├── 软件项目开发计划.md / 项目开发时间轴.md
+│   ├── architecture.md / environment-setup.md
+│   ├── auth.md / questions.md / exams.md / export.md
 │   ├── kvstore.md              # kv_store 存储层接口文档（涉及存储时必读）
-│   ├── questions.md            # 题目模块契约（数据初始化/接口/测试）
-│   ├── 软件需求说明书.md / 软件项目开发计划.md / 项目开发时间轴.md
-│   ├── 项目开发计划甘特图.xlsx / 系统UI设计稿.pptx
+│   ├── teacher-api.md / pi-chat-api.md / ai-access.md / pi-chat-evaluation.md
+│   ├── pi-chat-openapi.json / examples/
+│   ├── AI协作指南.md / AI辅助开发计划.md
 │   └── 2026秋季软件工程课程实践说明20260910.pdf
 │
 ├── scripts/                    # 运维脚本
@@ -167,7 +181,7 @@ curl http://localhost:8000/api/v1/health   # → {"status":"ok"}
 
 C内部HTTP超时仅接受1–60000毫秒整数，非法值回退默认并脱敏记录；修改需重启C，总请求预算包含连接，不能代替Pi模型任务AI_TIMEOUT_MS。诊断日志分类和单线程等待边界见architecture.md的“C → Pi 内部请求超时与诊断”。
 
-模型变量AI_API_BASE_URL/AI_MODEL/AI_API_KEY仅由ai-service读取，完整配置见其.env.example。所有账号默认无AI授权；scripts/ai_access.py是可信运维写入口，不可根据用户role=admin开放HTTP授权写入。接口和边界见pi-chat-api.md（1.2）、ai-access.md。
+模型变量AI_API_BASE_URL/AI_MODEL/AI_API_KEY仅由ai-service读取，完整配置见其.env.example。默认teacher路由模式下教师自管API（教师Key加密入库、学生按题目归属调用）；仅显式platform兼容模式使用scripts/ai_access.py做全局授权（不可根据用户role=admin开放HTTP授权写入）。接口和边界见pi-chat-api.md（1.3）、teacher-api.md、ai-access.md。
 
 生产部署：复制 `server/.env.example` → `server/.env`，systemd 通过 `EnvironmentFile` 加载。
 
@@ -261,13 +275,15 @@ AI 层（ai_client.c）  →  大模型代理调用
 ### 7.1 URL 约定
 
 ```
-/api/v1/health          → 健康检查（GET，无需认证）【已实现】
-/api/v1/auth/*          → 认证相关（login/logout/me）【已实现】
-/api/v1/questions       → 题目列表/详情（GET，只读）【已实现】
-/api/v1/chat            → AI 对话（规划中；前端已预留降级演示数据）
-/api/v1/exams/*         → 试卷组织与浏览（已实现，F03）
-/api/v1/conversations/* → 对话树相关
-/api/v1/admin/*        → 管理功能（规划中）
+/api/v1/health              → 健康检查（GET，无需认证）【已实现】
+/api/v1/auth/*              → 认证相关（register/login/logout/me）【已实现】
+/api/v1/questions[/{id}]    → 题目列表/详情/新增/修改/删除（读全角色，写 teacher/admin）【已实现】
+/api/v1/exams/*             → 试卷组织与浏览、状态切换、导出与导出策略（F03/F09）【已实现】
+/api/v1/teacher/ai-api      → 教师 API 配置（GET/PUT/PATCH，仅 teacher）【已实现】
+/api/v1/ai/access           → AI 权限/配额预检查【已实现】
+/api/v1/chat[/{job_id}]     → AI 解答异步任务（提交/查询/取消）【已实现】
+/api/v1/conversations/*     → 分支对话树【规划中，当前仅线性同题追问】
+/api/v1/admin/*            → 管理功能【规划中】
 ```
 
 ### 7.2 请求/响应格式
@@ -279,7 +295,7 @@ AI 层（ai_client.c）  →  大模型代理调用
 
 ### 7.3 API 文档
 
-统一 `docs/api.md` 尚在整合中；当前接口契约以模块文档为准：`docs/auth.md`（认证）、`docs/questions.md`（题目）、`docs/exams.md`（试卷）、`docs/export.md`（试卷导出）、`docs/kvstore.md`（存储层）。后端开发必须严格按对应模块文档的接口签名实现，新接口先落模块文档再写代码。
+当前接口契约以模块文档为准：`docs/auth.md`（认证）、`docs/questions.md`（题目）、`docs/exams.md`（试卷）、`docs/export.md`（导出）、`docs/teacher-api.md`（教师 API）、`docs/pi-chat-api.md`（前端 AI 对话）、`docs/ai-access.md`（AI 授权）、`docs/kvstore.md`（存储层）。后端开发必须严格按对应模块文档的接口签名实现，新接口先落模块文档再写代码。
 
 ---
 
@@ -315,12 +331,16 @@ AI 层（ai_client.c）  →  大模型代理调用
 
 - 运行器：`server/tests/run_tests.sh`，自动发现测试组并管理服务生命周期（启动 → 跑用例 → 关闭），默认使用独立临时数据库
 - 测试组：
-  - `auth/`：登录成功/失败、token 校验、登出（case_1~4.sh）
+  - `auth/`：登录成功/失败、注册校验、token 校验、登出
   - `health/`：健康检查（case_1.sh）
-  - `questions/`：题目列表/详情、401/404/405/500、旧库迁移（case_1~5.sh + check_api.py + db_test.c）
+  - `questions/`：题目列表/详情、401/404/405/500、旧库迁移（+ check_api.py + db_test.c）
   - `kv/`：kv_store 单元测试（case_unit.c，18 断言，不依赖 server 进程）
-  - `exams/`：试卷存储层单元测试（case_unit.c）+ 试卷接口回归（case_1~5.sh + check_exams.py）
-- 单独运行：`bash server/tests/run_tests.sh kv`（或 questions / auth / health / exams）
+  - `exams/`：试卷存储层单元测试 + 试卷接口回归（+ check_exams.py）
+  - `export/`：试卷导出回归（PDF/MD/LaTeX/DOCX + 策略）
+  - `chat/`：AI 对话链路回归（需临时 Pi Mock）
+  - `ai_access/`：全局 AI 授权单元/集成测试
+  - `teacher_api/`：教师 API 配置与额度测试
+- 单独运行：`bash server/tests/run_tests.sh kv`（或 questions / auth / health / exams / export / chat / ai_access / teacher_api）
 - CI 必须全绿，否则分支保护不允许合并
 
 ### 9.2 测试风格
@@ -376,8 +396,8 @@ main（受保护） ← PR（Squash merge） ← feat/fix/docs/... 分支
 
 | 角色 | 成员 | 负责模块 |
 |------|------|----------|
-| 后端-认证+AI | 刘英哲 | `auth.c/h`（登录/注册/鉴权，已完成）、`ai_client.c/h`、对话树 |
-| 后端-题库 | 李俊熠 | 题目 CRUD 路由（只读接口已接入 kv_store）, `db.c` 扩展 |
+| 后端-认证+AI | 刘英哲 | `auth.c/h`（登录/注册/鉴权，已完成）、`ai_client.c/h`、AI 对话链路 |
+| 后端-题库 | 李俊熠 | 题目 CRUD、试卷存储层（`exams.c`，已实现） |
 | 后端-审核/通知 | 牛宇歌 | 内容审核、通知中心（P2），配合其他后端模块 |
 | 后端-安全/测试/架构 | 卢恒毅 | 代码审查、测试体系、CI、安全审计 |
 | AI执行 | Node.js >=22.19 · TypeScript · Pi 0.84.1 | 内部教学技能/受限数学工具/异步队列，teacher模式Key由C加密托管并按任务交给Pi；platform模式Key仅Pi环境持有 |
